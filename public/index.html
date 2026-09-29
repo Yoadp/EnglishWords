@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>כרטיסיות אנגלית אקדמית</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app" id="app" hidden>
+    <div class="user-bar">
+      <span>שלום, <strong id="username" dir="auto"></strong></span>
+      <button class="link-btn" id="logout">התנתקות</button>
+    </div>
+
+    <header>
+      <h1>אנגלית אקדמית</h1>
+      <p class="subtitle">כרטיסיות אוצר מילים לרמה אוניברסיטאית</p>
+    </header>
+
+    <p class="sync-error" id="sync-error" hidden></p>
+
+    <nav class="tabs" aria-label="מצב">
+      <button class="tab" data-tab="practice">תרגול</button>
+      <button class="tab" data-tab="test">מבחן</button>
+      <button class="tab" data-tab="history">תוצאות שמורות</button>
+    </nav>
+
+    <!-- Practice -->
+    <section id="view-practice" class="view">
+      <label class="field">
+        <span>יחידה</span>
+        <select id="practice-unit" class="unit-select"></select>
+      </label>
+      <div class="decks">
+        <button class="deck-btn" data-deck="all">כל המילים <span id="count-all"></span></button>
+        <button class="deck-btn" data-deck="known">ידעתי <span id="count-known"></span></button>
+        <button class="deck-btn" data-deck="failed">לא ידעתי <span id="count-failed"></span></button>
+      </div>
+
+      <div id="practice-done" class="panel" hidden>
+        <h2>סיימתם את החפיסה!</h2>
+        <p id="practice-summary"></p>
+        <div class="stack">
+          <button class="action" id="repeat-known">חזרה על המילים שידעתי</button>
+          <button class="action" id="repeat-failed">תרגול המילים שלא ידעתי</button>
+          <button class="action secondary" id="restart-all">התחלה מחדש – כל המילים</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Test -->
+    <section id="view-test" class="view">
+      <div id="test-setup" class="panel">
+        <h2>מבחן חדש</h2>
+        <p class="muted">המילים נבחרות באקראי מתוך רשימת המילים.</p>
+        <label class="field">
+          <span>יחידה</span>
+          <select id="test-unit" class="unit-select"></select>
+        </label>
+        <label class="field">
+          <span>מספר מילים</span>
+          <input type="number" id="test-size" min="1" value="20" dir="ltr">
+        </label>
+        <div class="chips">
+          <button class="chip" data-size="10">10</button>
+          <button class="chip" data-size="20">20</button>
+          <button class="chip" data-size="50">50</button>
+          <button class="chip" data-size="100">100</button>
+        </div>
+        <p class="muted" id="test-pool"></p>
+        <button class="action" id="start-test">התחלת מבחן</button>
+      </div>
+
+      <div id="test-status" class="test-status" hidden>
+        <span id="test-status-text"></span>
+        <button class="link-btn" id="quit-test">סיום מוקדם</button>
+      </div>
+
+      <div id="test-results" class="panel" hidden>
+        <h2>תוצאות המבחן</h2>
+        <p class="score" id="test-score"></p>
+        <p class="muted" id="test-score-detail"></p>
+        <div class="stack">
+          <button class="action" id="save-results">שמירת התוצאות</button>
+          <button class="action secondary" id="download-results">הורדה כקובץ (CSV)</button>
+          <button class="action secondary" id="retest-failed">מבחן חוזר על המילים שלא ידעתי</button>
+          <button class="action secondary" id="new-test">מבחן חדש</button>
+        </div>
+        <div id="test-word-lists"></div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="view-history" class="view">
+      <div class="history-actions">
+        <button class="action secondary" id="export-history">הורדת כל התוצאות (CSV)</button>
+        <button class="link-btn" id="clear-history">מחיקת כל התוצאות</button>
+      </div>
+      <p class="muted" id="history-empty">עדיין לא נשמרו תוצאות. סיימו מבחן ולחצו על "שמירת התוצאות".</p>
+      <div id="history-list"></div>
+    </section>
+
+    <!-- Shared flashcard -->
+    <section id="study" hidden>
+      <div class="progress">
+        <div class="progress-bar"><div id="progress-fill"></div></div>
+        <span id="progress-text"></span>
+      </div>
+      <div class="card" id="card" tabindex="0" role="button" aria-label="הפוך כרטיס">
+        <div class="card-inner">
+          <div class="card-face card-front" dir="ltr">
+            <span class="unit-badge" id="unit-badge"></span>
+            <span class="word" id="word"></span>
+            <span class="hint">לחצו כדי להפוך</span>
+          </div>
+          <div class="card-face card-back">
+            <div class="translation" id="translation"></div>
+          </div>
+        </div>
+      </div>
+      <div class="answers">
+        <button class="answer fail" id="btn-fail">✗ לא ידעתי</button>
+        <button class="answer success" id="btn-success">✓ ידעתי</button>
+      </div>
+      <p class="keys">מקלדת: רווח = הפיכה · ← = ידעתי · → = לא ידעתי</p>
+    </section>
+
+    <footer>
+      <button class="link-btn" id="reset-session">איפוס רשימות ידעתי / לא ידעתי</button>
+    </footer>
+  </main>
+
+  <script src="vocabulary.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

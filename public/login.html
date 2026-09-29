@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>התחברות – אנגלית אקדמית</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>אנגלית אקדמית</h1>
+      <p class="subtitle">כרטיסיות אוצר מילים לרמה אוניברסיטאית</p>
+    </header>
+
+    <form class="panel auth-form" id="auth-form" data-mode="login" novalidate>
+      <h2>התחברות</h2>
+      <label class="auth-field">
+        <span>שם משתמש</span>
+        <input name="username" autocomplete="username" required dir="ltr">
+      </label>
+      <label class="auth-field">
+        <span>סיסמה</span>
+        <input name="password" type="password" autocomplete="current-password" required dir="ltr">
+      </label>
+      <p class="auth-error" id="auth-error" hidden></p>
+      <button class="action" type="submit">התחברות</button>
+      <p class="muted">אין לכם חשבון? <a href="/signup.html">להרשמה</a></p>
+    </form>
+  </main>
+  <script src="auth.js"></script>
+</body>
+</html>
