@@ -9,40 +9,43 @@ English→Hebrew vocabulary flashcards for Hebrew-speaking university students (
 ## Commands
 
 ```bash
-node server.js          # or: npm start — serves on http://localhost:3000 (override with PORT=...)
-node --check server.js sheets.js public/app.js public/auth.js   # quick syntax check
-node migrate-csv-to-sheets.js   # one-time import of the old CSV storage (data/) into the sheet; skips existing users
+node server.js          # or: npm start — local dev server on http://localhost:3000 (override with PORT=...)
+node --check server.js backend.js sheets.js api/index.js public/app.js public/auth.js   # quick syntax check
 ```
 
-There are no dependencies, no build step, no linter, and no test suite. The app must be run through the server — opening `public/index.html` directly from disk will not work (all data comes from `/api/*`). The server exits at startup if it can't open the sheet.
+There are no dependencies, no build step, no linter, and no test suite. The app must be run through a server — opening `public/index.html` directly from disk will not work (all data comes from `/api/*`). Running locally uses the user's real spreadsheet, so remove any test users you create (their tab and their row in `users`).
 
-Stop the server with Ctrl+C / SIGTERM, not `kill -9`: the shutdown handler flushes unsaved changes to the sheet. Running the server against the real sheet writes to the user's real spreadsheet, so remove any test users you create (their tab and their row in `users`).
+## Deployment (Vercel)
+
+Deployed on Vercel with no build step: `vercel.json` serves `public/` as static output and rewrites `/api/<path>` to the single function `api/index.js` as `/api?route=<path>`. Env vars: `GOOGLE_CREDENTIALS` (required), plus optionally `SPREADSHEET_ID` (otherwise read from `config.json`) and `SESSION_SECRET`. The backend must stay **stateless** — nothing may be kept in memory between requests, and nothing may run after a response is sent (the function can be frozen at that point).
 
 ## Architecture
 
-**Google Sheets storage.** `config.json` holds `spreadsheetId` (a bare ID or a full URL) and `credentialsFile` (the service-account key, `credentials.json`); these can be overridden with the env vars `SPREADSHEET_ID` / `GOOGLE_CREDENTIALS`. The sheet must be shared as Editor with the service account's `client_email`. **`sheets.js`** is a dependency-free REST client: it signs an RS256 JWT with Node `crypto`, exchanges it for an access token, and retries on 429/5xx. `writeTab` replaces a whole tab (write the rows first, then clear leftover rows below).
+**`backend.js`** — all API logic (`handleApi`), shared by the Vercel function and the local `server.js` (which just serves `public/` and forwards `/api/*`). It:
+- Reads the route from the `route` query param (the Vercel rewrite) or from the path (local), and reads the body from `req.body` when Vercel has already parsed it, otherwise from the stream.
+- Implements `signup`, `login`, `logout`, `GET me`, `GET data`, `POST/DELETE words`, `POST/DELETE tests`, `DELETE tests/:id`. Error messages returned to the client are in Hebrew.
+- Uses signed-cookie sessions: `sid = base64url(username).expiresAt.HMAC`, valid for 30 days. The HMAC key is `SESSION_SECRET`, or else is derived from the service-account private key, so changing either signs everyone out. Logout only clears the cookie.
+- Signs users up by creating their tab first — `addTab` fails if the name exists, which acts as a lock — then appending to `users`; the tab is deleted if that append fails.
+- Saves word results in batches: `POST /api/words` takes `{words: [...]}`, reads only columns A:E to find existing `word` rows, updates them in place with one `values:batchUpdate`, and appends rows for new words. Saving a test appends its rows. Deletes rewrite the whole tab.
+
+**Google Sheets storage.** `GOOGLE_CREDENTIALS` holds the service-account key JSON itself (not a path; base64-encoded JSON also works). If it's unset, `loadCredentials` in `sheets.js` falls back to the local `credentials.json`, which is in `.gitignore`/`.vercelignore` and must never be committed or deployed. The sheet must be shared as Editor with the service account's `client_email`. **`sheets.js`** is a dependency-free REST client: it signs an RS256 JWT with Node `crypto`, retries 429/5xx with a short backoff, and `writeTab` replaces a whole tab (write the rows first, then clear leftover rows below). The Sheets API quota (roughly 60 reads and 60 writes per minute for the one service account, shared by all users) is the main scaling limit — keep API calls per request minimal.
 
 Sheet layout:
-- `users` tab — `username,salt,password_hash,created_at` (scrypt hash). Usernames are lowercased, validated by `USERNAME_RE`, and double as tab names (`users` is reserved, and names are also checked case-insensitively against existing tabs).
-- One tab per user, named after the username, with columns `record_type,test_id,date,unit,english,hebrew,status,correct,total`. `record_type` is `word` (latest `succeeded`/`failed` status per English word), `test` (test summary), or `test_word` (each word in a test, written after its `test` row). A missing user tab is recreated automatically.
+- `users` tab — `username,salt,password_hash,created_at` (scrypt hash). Usernames are lowercased, validated by `USERNAME_RE`, and double as tab names (`users` is reserved).
+- One tab per user, named after the username, with columns `record_type,test_id,date,unit,english,hebrew,status,correct,total`. `record_type` is `word` (latest `succeeded`/`failed` status per English word; one row per word), `test` (test summary), or `test_word` (each word in a test, sharing its `test_id`). A missing user tab is recreated automatically.
 
-**`server.js`** — single-file Node HTTP server. It:
-- Loads all users at startup (creating the `users` tab if needed). Each user's tab is read on first use into an in-memory `cache`, which is the source of truth while the server runs. Changes mark the entry dirty and are flushed by rewriting the whole tab (`flush`; flushes for the same user never overlap). Word answers are debounced (`FLUSH_DELAY_MS`) to stay under the Sheets write quota; saved tests flush immediately and are rolled back if the write fails. Failed flushes are retried, and `POST /api/words` returns 502 while a user's last flush is failing so the client shows its error banner. Because the cache is only loaded once, edits made by hand in the sheet while the server runs may be overwritten.
-- Serves static files from `public/` only (never `config.json`, `credentials.json`, `data/` or server code; path traversal is guarded). `/` and `/index.html` redirect to `/login.html` when signed out; login/signup redirect to `/` when signed in.
-- Implements a JSON API under `/api/`: `signup`, `login`, `logout`, `GET data`, `POST/DELETE words`, `POST/DELETE tests`, `DELETE tests/:id`. Error messages returned to the client are in Hebrew.
-- Sessions are an in-memory `Map` keyed by an `sid` HttpOnly cookie, so restarting the server signs everyone out (data is unaffected).
+`migrate-csv-to-sheets.js` imported the old CSV storage and is kept only for reference (its `data/` source has been deleted).
 
-The old CSV storage (`data/`) has been migrated and deleted; `migrate-csv-to-sheets.js` is kept only for reference.
-
-**`public/vocabulary.js`** — generated data: `const VOCABULARY = [{en, he: [meanings...], units: [n...]}]` (~3,700 unique words, units 1–10), extracted from `english_words.pdf` (pages 17+; pages 1–16 are an alphabetical index with unit numbers). Duplicate English entries were merged into one entry with multiple Hebrew meanings. The extraction script is not in the repo; it used `pypdf`, and needed fixes for bidi artifacts in the Hebrew (mirrored parentheses, dropped trailing hyphens such as `ש-`, `…` moved to the wrong side). The English `en` string is the word's identity everywhere (client state, API, CSV).
+**`public/vocabulary.js`** — generated data: `const VOCABULARY = [{en, he: [meanings...], units: [n...]}]` (~3,700 unique words, units 1–10), extracted from `english_words.pdf` (pages 17+; pages 1–16 are an alphabetical index with unit numbers). Duplicate English entries were merged into one entry with multiple Hebrew meanings. The extraction script is not in the repo; it used `pypdf`, and needed fixes for bidi artifacts in the Hebrew (mirrored parentheses, dropped trailing hyphens such as `ש-`, `…` moved to the wrong side). The English `en` string is the word's identity everywhere (client state, API, sheet).
 
 **`public/app.js`** — the main app (single IIFE, no framework). Key ideas:
 - `init()` fetches `/api/data`, then builds `state`. The server is the source of truth for `state.known`, `state.failed` (arrays of `en`) and `history` (saved tests). Practice/test *position* (queues, index, current tab) lives in `sessionStorage` under `flashcards-session:<username>`.
 - Three tabs: practice (decks all/known/failed, filtered by unit), test (setup → running → done), and saved results (history).
-- One shared flashcard DOM (`#study`) serves both practice and a running test; `active()` returns whichever session object is current, and `answer()` updates it plus the known/failed lists and POSTs the word status.
+- One shared flashcard DOM (`#study`) serves both practice and a running test; `active()` returns whichever session object is current, and `answer()` updates it plus the known/failed lists.
+- Word results are batched on the client (`queueWord` → `flushWords`, which runs `WORD_FLUSH_MS` after the last answer; batches are serialized through `flushChain`, and failed batches are re-queued and retried). They're also sent with `fetch(..., {keepalive: true})` on `visibilitychange`/`pagehide`. Logout waits for pending words to be sent; reset discards them.
 - Rendering is imperative: every change calls `render()`, which re-renders the active tab. Saves go through `api()` / `sync()`; failures show the `#sync-error` banner, and a 401 redirects to the login page.
 - Keyboard: Space/Enter flips, ArrowLeft = knew, ArrowRight = didn't know (matches button positions in RTL).
 
-**`public/auth.js`** — shared by `login.html` and `signup.html`; the form's `data-mode` selects the endpoint.
+**`public/auth.js`** — shared by `login.html` and `signup.html`; the form's `data-mode` selects the endpoint. Redirects between the app and the login page happen client-side: `app.js` goes to login on a 401, and `auth.js` goes to the app if `/api/me` succeeds.
 
 **`public/styles.css`** — theme colors are CSS variables on `:root`, with a dark-mode override. `[hidden] { display: none !important; }` is deliberate: several elements set `display: flex`, which would otherwise override the `hidden` attribute that the JS relies on for showing and hiding views.

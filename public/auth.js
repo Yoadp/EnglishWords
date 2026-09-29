@@ -4,6 +4,9 @@
   const errorBox = document.getElementById("auth-error");
   const mode = form.dataset.mode;
 
+  // Already signed in: go straight to the app
+  fetch("/api/me").then((res) => res.ok && location.replace("/"), () => {});
+
   function showError(message) {
     errorBox.textContent = message;
     errorBox.hidden = false;

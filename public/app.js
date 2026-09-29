@@ -34,6 +34,61 @@
   // Fire-and-forget save that surfaces failures in the banner
   const sync = (promise) => promise.then(() => ($("sync-error").hidden = true), showSyncError);
 
+  // Word results are batched and sent together a few seconds after the last answer, to stay well under
+  // the Google Sheets API quota. They're also sent immediately when the tab is hidden or closed.
+  const WORD_FLUSH_MS = 4000;
+  const WORD_RETRY_MS = 15000;
+  const pendingWords = new Map(); // en -> { en, he, status }; a newer answer replaces an older one
+  let flushTimer = null;
+  let flushChain = Promise.resolve(); // batches are sent one at a time so they arrive in order
+
+  function queueWord(en, status) {
+    pendingWords.set(en, { en, he: byWord.get(en).he.join("; "), status });
+    clearTimeout(flushTimer);
+    flushTimer = setTimeout(flushWords, WORD_FLUSH_MS);
+  }
+
+  function takePending() {
+    clearTimeout(flushTimer);
+    const batch = [...pendingWords.values()];
+    pendingWords.clear();
+    return batch;
+  }
+
+  // Sends pending word results; resolves once they're saved (never rejects — failures are retried)
+  function flushWords() {
+    flushChain = flushChain.then(async () => {
+      const batch = takePending();
+      if (!batch.length) return;
+      try {
+        await api("POST", "/api/words", { words: batch });
+        $("sync-error").hidden = true;
+      } catch (err) {
+        // Put the batch back, unless the word was answered again in the meantime
+        batch.forEach((w) => pendingWords.has(w.en) || pendingWords.set(w.en, w));
+        showSyncError(err);
+        clearTimeout(flushTimer);
+        flushTimer = setTimeout(flushWords, WORD_RETRY_MS);
+      }
+    });
+    return flushChain;
+  }
+
+  // keepalive lets the request finish even if the page is being closed
+  function sendPendingOnExit() {
+    const batch = takePending();
+    if (!batch.length) return;
+    fetch("/api/words", {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ words: batch }),
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && sendPendingOnExit());
+  window.addEventListener("pagehide", sendPendingOnExit);
+
   let sessionKey = "";
 
   function loadSession() {
@@ -140,11 +195,7 @@
     state.known = state.known.filter((w) => w !== current);
     state.failed = state.failed.filter((w) => w !== current);
     (success ? state.known : state.failed).push(current);
-    sync(api("POST", "/api/words", {
-      en: current,
-      he: byWord.get(current).he.join("; "),
-      status: success ? "succeeded" : "failed",
-    }));
+    queueWord(current, success ? "succeeded" : "failed");
 
     if (s === state.practice) {
       s.round[success ? "known" : "failed"]++;
@@ -447,8 +498,10 @@
     render();
   });
 
-  $("reset-session").addEventListener("click", () => {
+  $("reset-session").addEventListener("click", async () => {
     if (!confirm("לאפס את רשימות ידעתי / לא ידעתי? (תוצאות מבחנים שמורות לא יימחקו)")) return;
+    takePending(); // unsent answers are being reset anyway
+    await flushChain; // don't let a batch already in flight land after the reset
     sync(api("DELETE", "/api/words"));
     state = freshState();
     saveState();
@@ -457,6 +510,7 @@
   });
 
   $("logout").addEventListener("click", async () => {
+    await flushWords();
     try {
       await api("POST", "/api/logout");
     } finally {

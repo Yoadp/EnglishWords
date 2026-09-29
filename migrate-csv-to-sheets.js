@@ -3,7 +3,7 @@
 // Users that already exist in the sheet are skipped, so it's safe to run more than once.
 const fs = require("fs");
 const path = require("path");
-const { SheetsClient, parseSpreadsheetId } = require("./sheets");
+const { SheetsClient, loadCredentials, parseSpreadsheetId } = require("./sheets");
 
 const DATA_DIR = path.join(__dirname, "data");
 const USERS_HEADER = ["username", "salt", "password_hash", "created_at"];
@@ -31,7 +31,7 @@ function parseCsv(text) {
 async function main() {
   const config = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
   const sheets = new SheetsClient({
-    credentialsFile: path.resolve(__dirname, config.credentialsFile || "credentials.json"),
+    credentials: loadCredentials({ file: path.resolve(__dirname, config.credentialsFile || "credentials.json") }),
     spreadsheetId: parseSpreadsheetId(config.spreadsheetId),
   });
 
