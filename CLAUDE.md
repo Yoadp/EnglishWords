@@ -9,19 +9,19 @@ English→Hebrew vocabulary flashcards for Hebrew-speaking university students (
 ## Commands
 
 ```bash
-node server.js          # or: npm start — local dev server on http://localhost:3000 (override with PORT=...)
-node --check server.js backend.js sheets.js api/index.js public/app.js public/auth.js   # quick syntax check
+node dev-server.js      # or: npm start — local dev server on http://localhost:3000 (override with PORT=...)
+node --check dev-server.js backend.js sheets.js api/index.js public/main.js public/auth.js   # quick syntax check
 ```
 
 There are no dependencies, no build step, no linter, and no test suite. The app must be run through a server — opening `public/index.html` directly from disk will not work (all data comes from `/api/*`). Running locally uses the user's real spreadsheet, so remove any test users you create (their tab and their row in `users`).
 
 ## Deployment (Vercel)
 
-Deployed on Vercel with no build step: `vercel.json` serves `public/` as static output and rewrites `/api/<path>` to the single function `api/index.js` as `/api?route=<path>`. Env vars: `GOOGLE_CREDENTIALS` (required), plus optionally `SPREADSHEET_ID` (otherwise read from `config.json`) and `SESSION_SECRET`. The backend must stay **stateless** — nothing may be kept in memory between requests, and nothing may run after a response is sent (the function can be frozen at that point).
+Deployed on Vercel with no build step: `vercel.json` serves `public/` as static output and rewrites `/api/<path>` to the single function `api/index.js` as `/api?route=<path>`. Env vars: `GOOGLE_CREDENTIALS` (required), plus optionally `SPREADSHEET_ID` (otherwise read from `config.json`) and `SESSION_SECRET`. Don't name files `app.js`, `index.js` or `server.js` outside `api/`: Vercel's zero-config detection treats such files as a Node server entrypoint and runs them as the backend. That happened once with `public/app.js` (a 500 error with `VOCABULARY is not defined`), which is why the files are `public/main.js` and `dev-server.js`, and why `vercel.json` sets `"framework": null`. The backend must stay **stateless** — nothing may be kept in memory between requests, and nothing may run after a response is sent (the function can be frozen at that point).
 
 ## Architecture
 
-**`backend.js`** — all API logic (`handleApi`), shared by the Vercel function and the local `server.js` (which just serves `public/` and forwards `/api/*`). It:
+**`backend.js`** — all API logic (`handleApi`), shared by the Vercel function and the local `dev-server.js` (which just serves `public/` and forwards `/api/*`). It:
 - Reads the route from the `route` query param (the Vercel rewrite) or from the path (local), and reads the body from `req.body` when Vercel has already parsed it, otherwise from the stream.
 - Implements `signup`, `login`, `logout`, `GET me`, `GET data`, `POST/DELETE words`, `POST/DELETE tests`, `DELETE tests/:id`. Error messages returned to the client are in Hebrew.
 - Uses signed-cookie sessions: `sid = base64url(username).expiresAt.HMAC`, valid for 30 days. The HMAC key is `SESSION_SECRET`, or else is derived from the service-account private key, so changing either signs everyone out. Logout only clears the cookie.
@@ -38,7 +38,7 @@ Sheet layout:
 
 **`public/vocabulary.js`** — generated data: `const VOCABULARY = [{en, he: [meanings...], units: [n...]}]` (~3,700 unique words, units 1–10), extracted from `english_words.pdf` (pages 17+; pages 1–16 are an alphabetical index with unit numbers). Duplicate English entries were merged into one entry with multiple Hebrew meanings. The extraction script is not in the repo; it used `pypdf`, and needed fixes for bidi artifacts in the Hebrew (mirrored parentheses, dropped trailing hyphens such as `ש-`, `…` moved to the wrong side). The English `en` string is the word's identity everywhere (client state, API, sheet).
 
-**`public/app.js`** — the main app (single IIFE, no framework). Key ideas:
+**`public/main.js`** — the main app (single IIFE, no framework). Key ideas:
 - `init()` fetches `/api/data`, then builds `state`. The server is the source of truth for `state.known`, `state.failed` (arrays of `en`) and `history` (saved tests). Practice/test *position* (queues, index, current tab) lives in `sessionStorage` under `flashcards-session:<username>`.
 - Three tabs: practice (decks all/known/failed, filtered by unit), test (setup → running → done), and saved results (history).
 - One shared flashcard DOM (`#study`) serves both practice and a running test; `active()` returns whichever session object is current, and `answer()` updates it plus the known/failed lists.
@@ -46,6 +46,6 @@ Sheet layout:
 - Rendering is imperative: every change calls `render()`, which re-renders the active tab. Saves go through `api()` / `sync()`; failures show the `#sync-error` banner, and a 401 redirects to the login page.
 - Keyboard: Space/Enter flips, ArrowLeft = knew, ArrowRight = didn't know (matches button positions in RTL).
 
-**`public/auth.js`** — shared by `login.html` and `signup.html`; the form's `data-mode` selects the endpoint. Redirects between the app and the login page happen client-side: `app.js` goes to login on a 401, and `auth.js` goes to the app if `/api/me` succeeds.
+**`public/auth.js`** — shared by `login.html` and `signup.html`; the form's `data-mode` selects the endpoint. Redirects between the app and the login page happen client-side: `main.js` goes to login on a 401, and `auth.js` goes to the app if `/api/me` succeeds.
 
 **`public/styles.css`** — theme colors are CSS variables on `:root`, with a dark-mode override. `[hidden] { display: none !important; }` is deliberate: several elements set `display: flex`, which would otherwise override the `hidden` attribute that the JS relies on for showing and hiding views.

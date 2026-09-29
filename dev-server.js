@@ -1,5 +1,5 @@
 // Local development server: serves ./public and routes /api/* to the same handler Vercel uses.
-// Run with: node server.js (credentials from GOOGLE_CREDENTIALS or the local credentials.json)
+// Run with: node dev-server.js (or npm start) (credentials from GOOGLE_CREDENTIALS or the local credentials.json)
 const http = require("http");
 const fs = require("fs");
 const path = require("path");

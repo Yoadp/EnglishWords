@@ -1,4 +1,4 @@
-// API logic, shared by the Vercel function (api/index.js) and the local dev server (server.js).
+// API logic, shared by the Vercel function (api/index.js) and the local dev server (dev-server.js).
 // Stateless by design (serverless): nothing is kept in memory between requests.
 //   - Sessions are signed cookies.
 //   - All data lives in the Google Sheet: a "users" tab (sign-up data) and one tab per user (progress).

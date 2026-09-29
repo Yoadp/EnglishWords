@@ -538,7 +538,7 @@
       data = await api("GET", "/api/data");
     } catch (err) {
       if (err.message !== "unauthorized") {
-        document.body.textContent = "לא ניתן לטעון את הנתונים מהשרת. ודאו שהשרת פועל (node server.js) ורעננו את הדף.";
+        document.body.textContent = "לא ניתן לטעון את הנתונים מהשרת. נסו לרענן את הדף בעוד רגע.";
       }
       return;
     }

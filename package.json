@@ -4,6 +4,6 @@
   "private": true,
   "description": "English-Hebrew vocabulary flashcards with per-user CSV storage",
   "scripts": {
-    "start": "node server.js"
+    "start": "node dev-server.js"
   }
 }
