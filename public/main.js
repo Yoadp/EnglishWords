@@ -212,10 +212,10 @@
   }
 
   // ---------- Practice ----------
-  // A word the user didn't know comes back a few cards later (random spot 2–5 cards ahead),
+  // A word the user didn't know comes back later (random spot 20–30 cards ahead, or at the end of a shorter deck),
   // and keeps coming back until it's marked as known.
-  const REQUEUE_MIN = 2;
-  const REQUEUE_MAX = 5;
+  const REQUEUE_MIN = 20;
+  const REQUEUE_MAX = 30;
 
   function requeueSoon(p, en) {
     const ahead = REQUEUE_MIN + Math.floor(Math.random() * (REQUEUE_MAX - REQUEUE_MIN + 1));
