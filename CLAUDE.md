@@ -41,6 +41,8 @@ Sheet layout:
 **`public/main.js`** — the main app (single IIFE, no framework). Key ideas:
 - `init()` fetches `/api/data`, then builds `state`. The server is the source of truth for `state.known`, `state.failed` (arrays of `en`) and `history` (saved tests). Practice/test *position* (queues, index, current tab) lives in `sessionStorage` under `flashcards-session:<username>`.
 - Three tabs: practice (decks all/known/failed, filtered by unit), test (setup → running → done), and saved results (history).
+- Practice only: a card answered "didn't know" is re-inserted 2–5 cards ahead (`requeueSoon`, `REQUEUE_MIN`/`REQUEUE_MAX`), so the queue can grow while practising. A test's queue is fixed: each word is asked once.
+- A test draws from `testPool()`: `state.test.source` is `"all"` (every word in the unit) or `"failed"` (the user's failed words in the unit). The source is not sent to the server; saved tests store only the unit.
 - One shared flashcard DOM (`#study`) serves both practice and a running test; `active()` returns whichever session object is current, and `answer()` updates it plus the known/failed lists.
 - Word results are batched on the client (`queueWord` → `flushWords`, which runs `WORD_FLUSH_MS` after the last answer; batches are serialized through `flushChain`, and failed batches are re-queued and retried). They're also sent with `fetch(..., {keepalive: true})` on `visibilitychange`/`pagehide`. Logout waits for pending words to be sent; reset discards them.
 - Rendering is imperative: every change calls `render()`, which re-renders the active tab. Saves go through `api()` / `sync()`; failures show the `#sync-error` banner, and a 401 redirects to the login page.

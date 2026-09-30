@@ -113,7 +113,7 @@
       known: [],
       failed: [],
       practice: { deck: "all", unit: "all", queue: shuffle(pool("all")), index: 0, round: { known: 0, failed: 0 } },
-      test: { phase: "setup", unit: "all", size: 20, queue: [], index: 0, answers: {}, startedAt: null, saved: false },
+      test: { phase: "setup", source: "all", unit: "all", size: 20, queue: [], index: 0, answers: {}, startedAt: null, saved: false },
     };
   }
 
@@ -203,6 +203,7 @@
       s.answers[current] = success;
     }
     s.index++;
+    if (s === state.practice && !success) requeueSoon(s, current);
     if (s === state.test && s.index >= s.queue.length) s.phase = "done";
 
     saveState();
@@ -211,6 +212,16 @@
   }
 
   // ---------- Practice ----------
+  // A word the user didn't know comes back a few cards later (random spot 2–5 cards ahead),
+  // and keeps coming back until it's marked as known.
+  const REQUEUE_MIN = 2;
+  const REQUEUE_MAX = 5;
+
+  function requeueSoon(p, en) {
+    const ahead = REQUEUE_MIN + Math.floor(Math.random() * (REQUEUE_MAX - REQUEUE_MIN + 1));
+    p.queue.splice(Math.min(p.index + ahead, p.queue.length), 0, en);
+  }
+
   function startPractice(deck, unit = state.practice.unit) {
     const words = deckWords(deck, unit);
     state.practice = { deck, unit, queue: shuffle(words), index: 0, round: { known: 0, failed: 0 } };
@@ -220,6 +231,17 @@
   }
 
   // ---------- Test ----------
+  const sourceLabel = (source) => (source === "failed" ? "מילים שלא ידעתי" : "כל המילים");
+
+  // Words a new test can draw from: every word, or only the ones the user didn't know
+  function testPool() {
+    const { source = "all", unit } = state.test;
+    return source === "failed" ? deckWords("failed", unit) : pool(unit);
+  }
+
+  const testLabel = () =>
+    state.test.source === "failed" ? `${sourceLabel("failed")} · ${unitLabel(state.test.unit)}` : unitLabel(state.test.unit);
+
   function startTest(words) {
     state.test = {
       ...state.test,
@@ -321,16 +343,20 @@
     $("test-results").hidden = t.phase !== "done";
 
     if (t.phase === "setup") {
-      const available = pool(t.unit).length;
+      const available = testPool().length;
+      $("test-source").value = t.source ?? "all";
       $("test-unit").value = t.unit;
       $("test-size").max = available;
       $("test-size").value = Math.min(t.size, available);
-      $("test-pool").textContent = `${available} מילים זמינות ב${unitLabel(t.unit)}.`;
+      $("test-pool").textContent = available
+        ? `${available} מילים זמינות (${sourceLabel(t.source)}, ${unitLabel(t.unit)}).`
+        : `אין מילים שלא ידעתם ב${unitLabel(t.unit)}. תרגלו קודם, או בחרו "כל המילים".`;
+      $("start-test").disabled = available === 0;
     }
 
     if (t.phase === "running") {
       const correct = Object.values(t.answers).filter(Boolean).length;
-      $("test-status-text").textContent = `${unitLabel(t.unit)} · ידעתם ${correct} מתוך ${t.index}`;
+      $("test-status-text").textContent = `${testLabel()} · ידעתם ${correct} מתוך ${t.index}`;
     }
 
     if (t.phase === "done") renderResults();
@@ -340,7 +366,7 @@
     const r = testResult();
     const pct = r.total ? Math.round((r.correct / r.total) * 100) : 0;
     $("test-score").textContent = `${pct}%`;
-    $("test-score-detail").textContent = `ידעתם ${r.correct} מתוך ${r.total} מילים · ${unitLabel(r.unit)}`;
+    $("test-score-detail").textContent = `ידעתם ${r.correct} מתוך ${r.total} מילים · ${testLabel()}`;
     $("save-results").disabled = state.test.saved || r.total === 0;
     $("save-results").textContent = state.test.saved ? "✓ התוצאות נשמרו" : "שמירת התוצאות";
     $("retest-failed").disabled = r.words.every((w) => w.ok);
@@ -430,6 +456,11 @@
   $("restart-all").addEventListener("click", () => startPractice("all"));
 
   // Test setup
+  $("test-source").addEventListener("change", (e) => {
+    state.test.source = e.target.value;
+    saveState();
+    render();
+  });
   $("test-unit").addEventListener("change", (e) => {
     state.test.unit = e.target.value;
     saveState();
@@ -448,7 +479,8 @@
     })
   );
   $("start-test").addEventListener("click", () => {
-    const available = pool(state.test.unit);
+    const available = testPool();
+    if (!available.length) return;
     const size = Math.max(1, Math.min(state.test.size, available.length));
     startTest(shuffle(available).slice(0, size));
   });
