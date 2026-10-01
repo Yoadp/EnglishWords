@@ -397,20 +397,49 @@
   // Never changes the known/failed lists — those come only from flashcards.
   const meaningsText = (w) => w.he.join("; ");
 
-  // The correct meaning plus 3 wrong ones, taken from other words — preferably from the same part of the word
-  // list (vocabulary.js "units", never shown to the user), so wrong answers are of a similar level.
-  // A wrong option may not share any meaning with the correct one, and no two options are the same.
+  // The correct meaning plus 3 wrong ones, using each word's topic and part of speech (vocabulary.js):
+  //   - 2 SIMILAR: same topic and same part of speech (fallback: same topic, any part of speech);
+  //   - 1 DIFFERENT: another topic, same part of speech — so it's unrelated in meaning, but grammar doesn't give it away.
+  // A wrong answer never shares an individual meaning with the correct one (e.g. "לזנוח" vs "לנטוש, לזנוח"),
+  // no two options are the same, and the "different" one never repeats a Hebrew text used in the word's own topic.
+  const meaningParts = (w) => new Set(w.he.flatMap((m) => m.split(/[,;/]/)).map((s) => s.trim()).filter(Boolean));
+  const groupBy = (key) => {
+    const groups = new Map();
+    for (const w of VOCABULARY) {
+      if (!groups.has(w[key])) groups.set(w[key], []);
+      groups.get(w[key]).push(w);
+    }
+    return groups;
+  };
+  const byTopic = groupBy("topic");
+  const byPos = groupBy("pos");
+  const topicTexts = new Map([...byTopic].map(([topic, words]) => [topic, new Set(words.map(meaningsText))]));
+
   function buildOptions(en) {
     const word = byWord.get(en);
-    const correct = meaningsText(word);
-    const options = [correct];
-    const sameUnit = VOCABULARY.filter((w) => w.units.some((u) => word.units.includes(u)));
-    for (const candidate of [...shuffle(sameUnit), ...shuffle(VOCABULARY)]) {
-      if (options.length === 4) break;
-      const text = meaningsText(candidate);
-      if (candidate.en === en || options.includes(text) || candidate.he.some((m) => word.he.includes(m))) continue;
-      options.push(text);
-    }
+    const own = meaningParts(word);
+    const options = [meaningsText(word)];
+    const usable = (c) => c.en !== en && !options.includes(meaningsText(c)) && ![...meaningParts(c)].some((m) => own.has(m));
+    // Adds up to `count` usable candidates (in random order); returns how many are still missing
+    const pick = (candidates, count) => {
+      for (const c of shuffle(candidates)) {
+        if (!count) break;
+        if (usable(c)) {
+          options.push(meaningsText(c));
+          count--;
+        }
+      }
+      return count;
+    };
+
+    const sameTopic = byTopic.get(word.topic);
+    let similar = pick(sameTopic.filter((w) => w.pos === word.pos), 2);
+    if (similar) similar = pick(sameTopic, similar);
+
+    const unrelated = (w) => w.topic !== word.topic && !topicTexts.get(word.topic).has(meaningsText(w));
+    if (pick(byPos.get(word.pos).filter(unrelated), 1)) pick(VOCABULARY.filter(unrelated), 1);
+
+    if (similar) pick(byPos.get(word.pos), similar); // never needed with the current word list, but keeps 4 options
     return shuffle(options);
   }
 
