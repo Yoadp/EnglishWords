@@ -484,6 +484,72 @@
     const mc = mcRunning() && state.test.index < state.test.queue.length;
     $("mc").hidden = !mc;
     if (mc) renderMc();
+
+    renderDrawer();
+  }
+
+  // ---------- Side panel: the words the user didn't know ----------
+  let drawerOpen = false;
+
+  function setDrawer(open) {
+    drawerOpen = open;
+    $("failed-drawer").hidden = !open;
+    $("drawer-backdrop").hidden = !open;
+    renderDrawer();
+    (open ? $("close-drawer") : $("open-failed-list")).focus();
+  }
+
+  // Same effect as answering "knew" on a flashcard: the word moves to the known list and is saved
+  function markKnown(en) {
+    state.failed = state.failed.filter((w) => w !== en);
+    if (!state.known.includes(en)) state.known.push(en);
+    queueWord(en, "succeeded");
+    saveState();
+    render();
+  }
+
+  // Count color in the top bar: 0–5 green, 6–20 yellow, 21+ red
+  const countClass = (n) => (n <= 5 ? "count-low" : n <= 20 ? "count-mid" : "count-high");
+
+  // "Show translation" toggle — a per-browser preference, so localStorage is enough
+  const TRANSLATION_PREF = "flashcards-drawer-show-translation";
+
+  function showTranslation() {
+    try {
+      return localStorage.getItem(TRANSLATION_PREF) !== "0";
+    } catch {
+      return true;
+    }
+  }
+
+  function setShowTranslation(show) {
+    try {
+      localStorage.setItem(TRANSLATION_PREF, show ? "1" : "0");
+    } catch {
+      // Storage unavailable: the toggle still works until the page is reloaded
+    }
+    $("failed-drawer").classList.toggle("hide-translation", !show);
+  }
+
+  function renderDrawer() {
+    const words = deckWords("failed").slice().reverse(); // most recently failed first
+    $("failed-list-count").textContent = `(${words.length})`;
+    $("failed-list-count").className = countClass(words.length);
+    if (!drawerOpen) return;
+    $("drawer-count").textContent = `(${words.length})`;
+    $("drawer-empty").hidden = words.length > 0;
+    $("drawer-list").replaceChildren(
+      ...words.map((en) => {
+        const button = el("button", { class: "mark-known", type: "button" }, "✓ ידעתי");
+        button.addEventListener("click", () => markKnown(en));
+        return el(
+          "li",
+          {},
+          el("div", { class: "drawer-word" }, el("span", { class: "en", dir: "ltr" }, en), el("span", { class: "he" }, byWord.get(en).he.join("; "))),
+          button
+        );
+      })
+    );
   }
 
   function renderCard(s) {
@@ -633,6 +699,13 @@
     })
   );
 
+  $("open-failed-list").addEventListener("click", () => setDrawer(true));
+  $("close-drawer").addEventListener("click", () => setDrawer(false));
+  $("drawer-backdrop").addEventListener("click", () => setDrawer(false));
+  $("toggle-translation").addEventListener("change", (e) => setShowTranslation(e.target.checked));
+  $("toggle-translation").checked = showTranslation();
+  setShowTranslation(showTranslation());
+
   card.addEventListener("click", flip);
   $("btn-success").addEventListener("click", () => answer(true));
   $("btn-fail").addEventListener("click", () => answer(false));
@@ -714,6 +787,11 @@
   });
 
   document.addEventListener("keydown", (e) => {
+    // While the side panel is open, only Esc (close) is handled — no flashcard/test shortcuts behind it
+    if (drawerOpen) {
+      if (e.key === "Escape") setDrawer(false);
+      return;
+    }
     if (["INPUT", "SELECT"].includes(e.target.tagName)) return;
 
     // Multiple-choice: 1–4 picks an answer, Enter/Space goes to the next question

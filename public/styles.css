@@ -6,6 +6,7 @@
   --accent: #2b4c7e;
   --success: #2e7d4f;
   --fail: #c0392b;
+  --warn: #b7791f;
   --border: #e2ddd2;
   --shadow: 0 10px 30px rgba(31, 36, 48, 0.12);
 }
@@ -19,6 +20,7 @@
     --accent: #7ea6e0;
     --success: #4fbf7f;
     --fail: #e8695a;
+    --warn: #e3b341;
     --border: #333a48;
     --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
   }
@@ -389,3 +391,127 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
 /* Result lists: the wrong answer picked in a multiple-choice test */
 .word-list .he { display: flex; flex-direction: column; gap: 2px; }
 .word-list li .he .chosen { color: var(--fail); font-size: 0.85rem; }
+
+/* Top bar */
+.user-bar-account { display: flex; align-items: center; gap: 14px; }
+.pill-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.pill-btn:hover { border-color: var(--accent); }
+/* Count of words the user didn't know: 0–5 green, 6–20 yellow, 21+ red */
+.pill-btn span { font-weight: 800; }
+.count-low { color: var(--success); }
+.count-mid { color: var(--warn); }
+.count-high { color: var(--fail); }
+
+/* Side panel with the words the user didn't know */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  inset-inline-start: 0;
+  width: min(380px, 90vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-inline-end: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  z-index: 11;
+  animation: drawer-in 0.2s ease-out;
+}
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-header h2 { margin: 0; font-size: 1.15rem; color: var(--accent); }
+.drawer-header h2 span { color: var(--muted); font-size: 0.9rem; font-weight: 400; }
+.drawer-close {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 4px 6px;
+}
+.drawer-close:hover { color: var(--text); }
+.drawer-empty { padding: 20px; margin: 0; }
+.drawer-list { list-style: none; margin: 0; padding: 4px 20px 20px; overflow-y: auto; flex: 1; }
+.drawer-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-word { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.drawer-word .en { font-weight: 700; align-self: flex-start; }
+.drawer-word .he { color: var(--muted); font-size: 0.85rem; }
+.mark-known {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--success);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--success);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.mark-known:hover { background: var(--success); color: #fff; }
+
+/* "Show translation" toggle in the side panel */
+.drawer-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.drawer-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.15s;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  inset-inline-start: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: inset-inline-start 0.15s;
+}
+.drawer-toggle input:checked + .switch { background: var(--accent); }
+.drawer-toggle input:checked + .switch::after { inset-inline-start: 21px; }
+.drawer-toggle input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
+.drawer.hide-translation .drawer-word .he { display: none; }

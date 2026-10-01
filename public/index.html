@@ -9,8 +9,11 @@
 <body>
   <main class="app" id="app" hidden>
     <div class="user-bar">
-      <span>שלום, <strong id="username" dir="auto"></strong></span>
-      <button class="link-btn" id="logout">התנתקות</button>
+      <button class="pill-btn" id="open-failed-list" aria-controls="failed-drawer">המילים שלא ידעתי <span id="failed-list-count"></span></button>
+      <div class="user-bar-account">
+        <span>שלום, <strong id="username" dir="auto"></strong></span>
+        <button class="link-btn" id="logout">התנתקות</button>
+      </div>
     </div>
 
     <header>
@@ -151,6 +154,21 @@
       <p class="keys">מקלדת: <bdi dir="ltr">1–4</bdi> = בחירת תשובה · <bdi>Enter</bdi> = הבא</p>
     </section>
 
+    <!-- Side panel: every word the user didn't know, each with a button to mark it as known -->
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+    <aside class="drawer" id="failed-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+      <div class="drawer-header">
+        <h2 id="drawer-title">המילים שלא ידעתי <span id="drawer-count"></span></h2>
+        <button class="drawer-close" id="close-drawer" aria-label="סגירה">✕</button>
+      </div>
+      <label class="drawer-toggle">
+        <span>הצגת התרגום</span>
+        <input type="checkbox" id="toggle-translation" checked>
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <p class="muted drawer-empty" id="drawer-empty">אין כרגע מילים שלא ידעתם.</p>
+      <ul class="drawer-list" id="drawer-list"></ul>
+    </aside>
   </main>
 
   <script src="vocabulary.js"></script>
