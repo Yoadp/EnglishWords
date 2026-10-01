@@ -55,6 +55,14 @@
         <h2>מבחן חדש</h2>
         <p class="muted">המילים נבחרות באקראי מתוך רשימת המילים.</p>
         <label class="field">
+          <span>סוג מבחן</span>
+          <select id="test-type">
+            <option value="flashcards">כרטיסיות (ידעתי / לא ידעתי)</option>
+            <option value="mc">אמריקאי – 4 תשובות</option>
+          </select>
+        </label>
+        <p class="muted" id="test-type-note" hidden>במבחן אמריקאי התשובות לא משנות את רשימות ידעתי / לא ידעתי.</p>
+        <label class="field">
           <span>מילים מתוך</span>
           <select id="test-source">
             <option value="all">כל המילים</option>
@@ -84,28 +92,32 @@
         <button class="link-btn" id="quit-test">סיום מוקדם</button>
       </div>
 
-      <div id="test-results" class="panel" hidden>
-        <h2>תוצאות המבחן</h2>
-        <p class="score" id="test-score"></p>
-        <p class="muted" id="test-score-detail"></p>
-        <div class="stack">
-          <button class="action" id="save-results">שמירת התוצאות</button>
-          <button class="action secondary" id="download-results">הורדה כקובץ (CSV)</button>
-          <button class="action secondary" id="retest-failed">מבחן חוזר על המילים שלא ידעתי</button>
-          <button class="action secondary" id="new-test">מבחן חדש</button>
-        </div>
-        <div id="test-word-lists"></div>
-      </div>
     </section>
 
-    <!-- History -->
+    <!-- History: list of saved tests, or one test's results -->
     <section id="view-history" class="view">
-      <div class="history-actions">
-        <button class="action secondary" id="export-history">הורדת כל התוצאות (CSV)</button>
-        <button class="link-btn" id="clear-history">מחיקת כל התוצאות</button>
+      <div id="history-list-view">
+        <div class="history-actions">
+          <button class="action secondary" id="export-history">הורדת כל התוצאות (CSV)</button>
+        </div>
+        <p class="muted" id="history-empty">עדיין אין תוצאות. כשתסיימו מבחן, התוצאות יישמרו כאן אוטומטית.</p>
+        <div id="history-list"></div>
       </div>
-      <p class="muted" id="history-empty">עדיין לא נשמרו תוצאות. סיימו מבחן ולחצו על "שמירת התוצאות".</p>
-      <div id="history-list"></div>
+
+      <div id="result-view" class="panel" hidden>
+        <button class="link-btn back-link" id="result-back">חזרה לכל התוצאות</button>
+        <h2>תוצאות המבחן</h2>
+        <p class="score" id="result-score"></p>
+        <p class="muted" id="result-detail"></p>
+        <p class="result-status" id="result-status"></p>
+        <div class="stack">
+          <button class="action" id="result-retry" hidden>נסו לשמור שוב</button>
+          <button class="action secondary" id="result-download">הורדה כקובץ (CSV)</button>
+          <button class="action secondary" id="result-retest"></button>
+        </div>
+        <div id="result-word-lists"></div>
+        <button class="link-btn danger" id="result-delete">מחיקת המבחן</button>
+      </div>
     </section>
 
     <!-- Shared flashcard -->
@@ -133,9 +145,22 @@
       <p class="keys">מקלדת: רווח = הפיכה · ← = ידעתי · → = לא ידעתי</p>
     </section>
 
-    <footer>
-      <button class="link-btn" id="reset-session">איפוס רשימות ידעתי / לא ידעתי</button>
-    </footer>
+    <!-- Multiple-choice question -->
+    <section id="mc" hidden>
+      <div class="progress">
+        <div class="progress-bar"><div id="mc-progress-fill"></div></div>
+        <span id="mc-progress-text"></span>
+      </div>
+      <div class="mc-question">
+        <span class="unit-badge" id="mc-unit-badge"></span>
+        <span class="word" id="mc-word" dir="ltr"></span>
+        <span class="muted">בחרו את הפירוש הנכון</span>
+      </div>
+      <div class="mc-options" id="mc-options"></div>
+      <button class="action" id="mc-next" hidden>הבא ←</button>
+      <p class="keys">מקלדת: <bdi dir="ltr">1–4</bdi> = בחירת תשובה · <bdi>Enter</bdi> = הבא</p>
+    </section>
+
   </main>
 
   <script src="vocabulary.js"></script>

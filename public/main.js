@@ -39,11 +39,36 @@
   const WORD_FLUSH_MS = 4000;
   const WORD_RETRY_MS = 15000;
   const pendingWords = new Map(); // en -> { en, he, status }; a newer answer replaces an older one
+  // Sent while the page was closing/hidden but not confirmed yet (en -> word). Kept in sessionStorage together
+  // with pendingWords, so a reload re-applies them before the server has caught up — and sends them again,
+  // which is harmless (saving the same status twice changes nothing).
+  const unconfirmed = new Map();
   let flushTimer = null;
   let flushChain = Promise.resolve(); // batches are sent one at a time so they arrive in order
 
+  const pendingKey = () => `${sessionKey}:pending-words`;
+
+  function persistPending() {
+    if (!sessionKey) return;
+    try {
+      sessionStorage.setItem(pendingKey(), JSON.stringify([...unconfirmed.values(), ...pendingWords.values()]));
+    } catch {
+      // Storage unavailable — pending words still live in memory
+    }
+  }
+
+  function loadPendingStored() {
+    try {
+      return JSON.parse(sessionStorage.getItem(pendingKey())) || [];
+    } catch {
+      return [];
+    }
+  }
+
   function queueWord(en, status) {
+    unconfirmed.delete(en); // this newer answer supersedes anything sent earlier
     pendingWords.set(en, { en, he: byWord.get(en).he.join("; "), status });
+    persistPending();
     clearTimeout(flushTimer);
     flushTimer = setTimeout(flushWords, WORD_FLUSH_MS);
   }
@@ -70,6 +95,7 @@
         clearTimeout(flushTimer);
         flushTimer = setTimeout(flushWords, WORD_RETRY_MS);
       }
+      persistPending();
     });
     return flushChain;
   }
@@ -78,12 +104,33 @@
   function sendPendingOnExit() {
     const batch = takePending();
     if (!batch.length) return;
+    batch.forEach((w) => unconfirmed.set(w.en, w));
+    persistPending();
     fetch("/api/words", {
       method: "POST",
       keepalive: true,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ words: batch }),
-    });
+    }).then(
+      (res) => {
+        if (!res.ok) return;
+        batch.forEach((w) => unconfirmed.get(w.en) === w && unconfirmed.delete(w.en));
+        persistPending();
+      },
+      () => {} // page closed or offline: the words stay stored and are re-sent on the next load
+    );
+  }
+
+  // Re-applies answers that may not have reached the server yet (e.g. right after a reload) and re-sends them
+  function restorePendingWords() {
+    for (const w of loadPendingStored()) {
+      if (!byWord.has(w.en)) continue;
+      state.known = state.known.filter((en) => en !== w.en);
+      state.failed = state.failed.filter((en) => en !== w.en);
+      (w.status === "succeeded" ? state.known : state.failed).push(w.en);
+      pendingWords.set(w.en, w);
+    }
+    if (pendingWords.size) flushWords();
   }
 
   document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && sendPendingOnExit());
@@ -113,7 +160,13 @@
       known: [],
       failed: [],
       practice: { deck: "all", unit: "all", queue: shuffle(pool("all")), index: 0, round: { known: 0, failed: 0 } },
-      test: { phase: "setup", source: "all", unit: "all", size: 20, queue: [], index: 0, answers: {}, startedAt: null, saved: false },
+      test: {
+        phase: "setup", type: "flashcards", source: "all", unit: "all", size: 20,
+        queue: [], index: 0, answers: {}, options: {}, chosen: {}, startedAt: null,
+      },
+      // Finished tests whose save hasn't succeeded yet (retried automatically); and the result open in history
+      unsaved: [],
+      openResult: null,
     };
   }
 
@@ -169,9 +222,13 @@
     new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
 
   // ---------- Active flashcard session ----------
+  const isMcTest = () => state.test.type === "mc";
+  const mcRunning = () => state.tab === "test" && state.test.phase === "running" && isMcTest();
+
+  // The flashcard session currently on screen (practice, or a flashcard test); multiple-choice tests use #mc instead
   function active() {
     if (state.tab === "practice") return state.practice;
-    if (state.tab === "test" && state.test.phase === "running") return state.test;
+    if (state.tab === "test" && state.test.phase === "running" && !isMcTest()) return state.test;
     return null;
   }
 
@@ -204,7 +261,7 @@
     }
     s.index++;
     if (s === state.practice && !success) requeueSoon(s, current);
-    if (s === state.test && s.index >= s.queue.length) s.phase = "done";
+    if (s === state.test && s.index >= s.queue.length) return finishTest();
 
     saveState();
     resetFlip();
@@ -222,9 +279,21 @@
     p.queue.splice(Math.min(p.index + ahead, p.queue.length), 0, en);
   }
 
-  function startPractice(deck, unit = state.practice.unit) {
+  // In the "all words" deck, known words are kept out of the first KNOWN_FREE_START cards and shuffled
+  // randomly into the rest, so a session starts with words still worth practising.
+  const KNOWN_FREE_START = 50;
+
+  function practiceQueue(deck, unit) {
     const words = deckWords(deck, unit);
-    state.practice = { deck, unit, queue: shuffle(words), index: 0, round: { known: 0, failed: 0 } };
+    if (deck !== "all") return shuffle(words);
+    const known = new Set(state.known);
+    const others = shuffle(words.filter((en) => !known.has(en)));
+    const head = others.slice(0, KNOWN_FREE_START);
+    return [...head, ...shuffle([...others.slice(KNOWN_FREE_START), ...words.filter((en) => known.has(en))])];
+  }
+
+  function startPractice(deck, unit = state.practice.unit) {
+    state.practice = { deck, unit, queue: practiceQueue(deck, unit), index: 0, round: { known: 0, failed: 0 } };
     saveState();
     resetFlip();
     render();
@@ -239,18 +308,26 @@
     return source === "failed" ? deckWords("failed", unit) : pool(unit);
   }
 
+  // Saved tests from before test types existed have no type
+  const typeLabel = (type) => ({ mc: "אמריקאי", flashcards: "כרטיסיות" })[type] || "";
+
   const testLabel = () =>
-    state.test.source === "failed" ? `${sourceLabel("failed")} · ${unitLabel(state.test.unit)}` : unitLabel(state.test.unit);
+    [isMcTest() && typeLabel("mc"), state.test.source === "failed" && sourceLabel("failed"), unitLabel(state.test.unit)]
+      .filter(Boolean)
+      .join(" · ");
 
   function startTest(words) {
+    const queue = shuffle(words);
     state.test = {
       ...state.test,
       phase: "running",
-      queue: shuffle(words),
+      queue,
       index: 0,
       answers: {},
+      chosen: {},
+      // Built up front and kept in the session, so a page reload shows the same answers
+      options: isMcTest() ? Object.fromEntries(queue.map((en) => [en, buildOptions(en)])) : {},
       startedAt: new Date().toISOString(),
-      saved: false,
     };
     saveState();
     resetFlip();
@@ -259,27 +336,148 @@
 
   function testResult() {
     const t = state.test;
-    const words = t.queue.filter((en) => en in t.answers).map((en) => ({
-      en,
-      he: byWord.get(en)?.he.join("; ") ?? "",
-      ok: t.answers[en],
-    }));
+    const mc = isMcTest();
+    const words = t.queue.filter((en) => en in t.answers).map((en) => {
+      const word = { en, he: byWord.get(en)?.he.join("; ") ?? "", ok: t.answers[en] };
+      if (mc && !word.ok && t.chosen?.[en]) word.chosen = t.chosen[en];
+      return word;
+    });
     return {
       id: t.startedAt,
       date: t.startedAt,
       unit: t.unit,
+      type: t.type || "flashcards",
       total: words.length,
       correct: words.filter((w) => w.ok).length,
       words,
     };
   }
 
+  // A finished test (or one ended early) is saved right away and its results open in the history tab.
+  // The test tab goes back to the setup screen.
+  function finishTest() {
+    const r = testResult();
+    state.test.phase = "setup";
+    if (r.total) {
+      state.unsaved.push(r);
+      state.tab = "history";
+      state.openResult = r.id;
+    }
+    saveState();
+    resetFlip();
+    render();
+    window.scrollTo(0, 0);
+    saveResults();
+  }
+
+  // Saves finished tests one by one. A failed save keeps the result (in the session) for a retry.
+  let savingResults = false;
+
+  async function saveResults() {
+    if (savingResults) return;
+    savingResults = true;
+    render();
+    try {
+      while (state.unsaved.length) {
+        const r = state.unsaved[0];
+        const saved = await api("POST", "/api/tests", { date: r.date, unit: r.unit, type: r.type, words: r.words });
+        state.unsaved.shift();
+        if (!history.some((h) => h.id === saved.id)) history.push(saved);
+        if (state.openResult === r.id) state.openResult = saved.id;
+        saveState();
+      }
+      $("sync-error").hidden = true;
+    } catch (err) {
+      showSyncError(err);
+    }
+    savingResults = false;
+    render();
+  }
+
   function resultRows(results) {
-    const rows = [["תאריך", "יחידה", "English", "עברית", "תוצאה"]];
+    const rows = [["תאריך", "סוג מבחן", "יחידה", "English", "עברית", "תוצאה", "התשובה שנבחרה"]];
     results.forEach((r) =>
-      r.words.forEach((w) => rows.push([formatDate(r.date), unitLabel(r.unit), w.en, w.he, w.ok ? "ידעתי" : "לא ידעתי"]))
+      r.words.forEach((w) =>
+        rows.push([
+          formatDate(r.date), typeLabel(r.type), unitLabel(r.unit), w.en, w.he, w.ok ? "ידעתי" : "לא ידעתי", w.chosen || "",
+        ])
+      )
     );
     return rows;
+  }
+
+  // ---------- Multiple-choice ("American") tests ----------
+  // Never changes the known/failed lists — those come only from flashcards.
+  const meaningsText = (w) => w.he.join("; ");
+
+  // The correct meaning plus 3 wrong ones, taken from other words — preferably from the same unit.
+  // A wrong option may not share any meaning with the correct one, and no two options are the same.
+  function buildOptions(en) {
+    const word = byWord.get(en);
+    const correct = meaningsText(word);
+    const options = [correct];
+    const sameUnit = VOCABULARY.filter((w) => w.units.some((u) => word.units.includes(u)));
+    for (const candidate of [...shuffle(sameUnit), ...shuffle(VOCABULARY)]) {
+      if (options.length === 4) break;
+      const text = meaningsText(candidate);
+      if (candidate.en === en || options.includes(text) || candidate.he.some((m) => word.he.includes(m))) continue;
+      options.push(text);
+    }
+    return shuffle(options);
+  }
+
+  function chooseOption(i) {
+    const t = state.test;
+    const en = t.queue[t.index];
+    const text = t.options[en]?.[i];
+    if (!en || en in t.answers || text === undefined) return;
+    t.answers[en] = text === meaningsText(byWord.get(en));
+    t.chosen[en] = text;
+    saveState();
+    render();
+  }
+
+  function nextQuestion() {
+    const t = state.test;
+    const en = t.queue[t.index];
+    if (!en || !(en in t.answers)) return; // answer first
+    t.index++;
+    if (t.index >= t.queue.length) return finishTest();
+    saveState();
+    render();
+  }
+
+  function renderMc() {
+    const t = state.test;
+    const en = t.queue[t.index];
+    const w = byWord.get(en);
+    if (!t.options[en]) {
+      t.options[en] = buildOptions(en);
+      saveState();
+    }
+
+    const total = t.queue.length;
+    $("mc-progress-fill").style.width = `${(t.index / total) * 100}%`;
+    $("mc-progress-text").textContent = `${t.index} / ${total}`;
+    $("mc-word").textContent = w.en;
+    $("mc-unit-badge").textContent = w.units.map((u) => `Unit ${u}`).join(" · ");
+
+    const correct = meaningsText(w);
+    const answered = en in t.answers;
+    $("mc-options").replaceChildren(
+      ...t.options[en].map((text, i) => {
+        const button = el("button", { class: "mc-option", type: "button" }, el("span", { class: "mc-key" }, String(i + 1)), el("span", {}, text));
+        if (answered) {
+          button.disabled = true;
+          if (text === correct) button.classList.add("correct");
+          else if (text === t.chosen[en]) button.classList.add("wrong");
+        }
+        button.addEventListener("click", () => chooseOption(i));
+        return button;
+      })
+    );
+    $("mc-next").hidden = !answered;
+    $("mc-next").textContent = t.index === total - 1 ? "לתוצאות ←" : "הבא ←";
   }
 
   // ---------- Rendering ----------
@@ -295,6 +493,10 @@
     const studying = !!s && s.index < s.queue.length;
     $("study").hidden = !studying;
     if (studying) renderCard(s);
+
+    const mc = mcRunning() && state.test.index < state.test.queue.length;
+    $("mc").hidden = !mc;
+    if (mc) renderMc();
   }
 
   function renderCard(s) {
@@ -340,10 +542,11 @@
     const t = state.test;
     $("test-setup").hidden = t.phase !== "setup";
     $("test-status").hidden = t.phase !== "running";
-    $("test-results").hidden = t.phase !== "done";
 
     if (t.phase === "setup") {
       const available = testPool().length;
+      $("test-type").value = t.type ?? "flashcards";
+      $("test-type-note").hidden = !isMcTest();
       $("test-source").value = t.source ?? "all";
       $("test-unit").value = t.unit;
       $("test-size").max = available;
@@ -355,74 +558,82 @@
     }
 
     if (t.phase === "running") {
-      const correct = Object.values(t.answers).filter(Boolean).length;
-      $("test-status-text").textContent = `${testLabel()} · ידעתם ${correct} מתוך ${t.index}`;
+      const answers = Object.values(t.answers);
+      $("test-status-text").textContent = `${testLabel()} · ידעתם ${answers.filter(Boolean).length} מתוך ${answers.length}`;
     }
-
-    if (t.phase === "done") renderResults();
   }
 
-  function renderResults() {
-    const r = testResult();
-    const pct = r.total ? Math.round((r.correct / r.total) * 100) : 0;
-    $("test-score").textContent = `${pct}%`;
-    $("test-score-detail").textContent = `ידעתם ${r.correct} מתוך ${r.total} מילים · ${testLabel()}`;
-    $("save-results").disabled = state.test.saved || r.total === 0;
-    $("save-results").textContent = state.test.saved ? "✓ התוצאות נשמרו" : "שמירת התוצאות";
-    $("retest-failed").disabled = r.words.every((w) => w.ok);
-    $("test-word-lists").replaceChildren(...wordLists(r.words));
-  }
-
-  function wordLists(words) {
+  function wordLists(words, type) {
+    const [wrongTitle, rightTitle] = type === "mc" ? ["טעויות", "תשובות נכונות"] : ["לא ידעתי", "ידעתי"];
+    const item = (w) =>
+      el(
+        "li",
+        {},
+        el("span", { dir: "ltr", class: "en" }, w.en),
+        el("span", { class: "he" }, el("span", {}, w.he), w.chosen ? el("span", { class: "chosen" }, `בחרתם: ${w.chosen}`) : "")
+      );
     const section = (title, list, cls) =>
       list.length
-        ? el(
-            "div",
-            { class: `word-list ${cls}` },
-            el("h3", {}, `${title} (${list.length})`),
-            el("ul", {}, list.map((w) => el("li", {}, el("span", { dir: "ltr", class: "en" }, w.en), el("span", {}, w.he))))
-          )
+        ? el("div", { class: `word-list ${cls}` }, el("h3", {}, `${title} (${list.length})`), el("ul", {}, list.map(item)))
         : "";
     return [
-      section("לא ידעתי", words.filter((w) => !w.ok), "failed"),
-      section("ידעתי", words.filter((w) => w.ok), "known"),
+      section(wrongTitle, words.filter((w) => !w.ok), "failed"),
+      section(rightTitle, words.filter((w) => w.ok), "known"),
     ];
   }
 
-  function renderHistory() {
-    $("history-empty").hidden = history.length > 0;
-    $("export-history").disabled = history.length === 0;
-    $("clear-history").hidden = history.length === 0;
+  // ---------- History: list of tests, or one test's results ----------
+  const percent = (r) => (r.total ? Math.round((r.correct / r.total) * 100) : 0);
+  const resultSummary = (r) => [typeLabel(r.type), unitLabel(r.unit)].filter(Boolean).join(" · ");
+  const isUnsaved = (r) => state.unsaved.includes(r);
+  const openedResult = () =>
+    state.openResult ? state.unsaved.find((r) => r.id === state.openResult) || history.find((r) => r.id === state.openResult) : null;
+  const missedWords = (r) => r.words.filter((w) => !w.ok && byWord.has(w.en)).map((w) => w.en);
 
+  function showResult(id) {
+    state.openResult = id;
+    saveState();
+    render();
+    window.scrollTo(0, 0);
+  }
+
+  function renderHistory() {
+    const opened = openedResult();
+    $("history-list-view").hidden = !!opened;
+    $("result-view").hidden = !opened;
+    if (opened) return renderResult(opened);
+
+    const all = [...state.unsaved, ...history.slice().reverse()];
+    $("history-empty").hidden = all.length > 0;
+    $("export-history").disabled = history.length === 0;
     $("history-list").replaceChildren(
-      ...history
-        .slice()
-        .reverse()
-        .map((r) => {
-          const pct = r.total ? Math.round((r.correct / r.total) * 100) : 0;
-          const del = el("button", { class: "link-btn" }, "מחיקה");
-          del.addEventListener("click", () => {
-            history = history.filter((h) => h.id !== r.id);
-            sync(api("DELETE", `/api/tests/${encodeURIComponent(r.id)}`));
-            render();
-          });
-          const dl = el("button", { class: "link-btn" }, "הורדה");
-          dl.addEventListener("click", () => downloadCsv(`test-${r.date.slice(0, 10)}.csv`, resultRows([r])));
-          return el(
-            "details",
-            { class: "history-item" },
-            el(
-              "summary",
-              {},
-              el("span", { class: "history-score" }, `${pct}%`),
-              el("span", {}, `${r.correct}/${r.total} · ${unitLabel(r.unit)}`),
-              el("span", { class: "muted" }, formatDate(r.date))
-            ),
-            el("div", { class: "history-item-actions" }, dl, del),
-            ...wordLists(r.words)
-          );
-        })
+      ...all.map((r) => {
+        const row = el(
+          "button",
+          { class: "history-row", type: "button" },
+          el("span", { class: "history-score" }, `${percent(r)}%`),
+          el("span", {}, [`${r.correct}/${r.total}`, resultSummary(r)].join(" · ")),
+          el("span", { class: "muted" }, isUnsaved(r) ? "לא נשמר עדיין" : formatDate(r.date))
+        );
+        row.addEventListener("click", () => showResult(r.id));
+        return row;
+      })
     );
+  }
+
+  function renderResult(r) {
+    const unsaved = isUnsaved(r);
+    $("result-score").textContent = `${percent(r)}%`;
+    $("result-detail").textContent = `ידעתם ${r.correct} מתוך ${r.total} מילים · ${resultSummary(r)} · ${formatDate(r.date)}`;
+    $("result-status").textContent = !unsaved ? "✓ התוצאות נשמרו" : savingResults ? "שומר את התוצאות..." : "התוצאות עדיין לא נשמרו";
+    $("result-status").classList.toggle("warn", unsaved && !savingResults);
+    $("result-retry").hidden = !unsaved || savingResults;
+    $("result-delete").hidden = unsaved;
+    const missed = missedWords(r).length;
+    $("result-retest").textContent =
+      r.type === "mc" ? `מבחן חוזר על הטעויות (${missed})` : `מבחן חוזר על המילים שלא ידעתי (${missed})`;
+    $("result-retest").disabled = missed === 0;
+    $("result-word-lists").replaceChildren(...wordLists(r.words, r.type));
   }
 
   function buildUnitSelects() {
@@ -438,6 +649,7 @@
   document.querySelectorAll(".tab").forEach((b) =>
     b.addEventListener("click", () => {
       state.tab = b.dataset.tab;
+      if (state.tab === "history") state.openResult = null;
       saveState();
       resetFlip();
       render();
@@ -456,6 +668,11 @@
   $("restart-all").addEventListener("click", () => startPractice("all"));
 
   // Test setup
+  $("test-type").addEventListener("change", (e) => {
+    state.test.type = e.target.value;
+    saveState();
+    render();
+  });
   $("test-source").addEventListener("change", (e) => {
     state.test.source = e.target.value;
     saveState();
@@ -486,60 +703,34 @@
   });
 
   // Test running / results
-  $("quit-test").addEventListener("click", () => {
-    state.test.phase = "done";
-    saveState();
-    resetFlip();
-    render();
-  });
-  $("save-results").addEventListener("click", async () => {
-    const r = testResult();
-    if (!r.total || state.test.saved) return;
-    const button = $("save-results");
-    button.disabled = true;
-    button.textContent = "שומר...";
-    try {
-      history.push(await api("POST", "/api/tests", { date: r.date, unit: r.unit, words: r.words }));
-      $("sync-error").hidden = true;
-      state.test.saved = true;
-      saveState();
-    } catch (err) {
-      showSyncError(err);
-    }
-    render();
-  });
-  $("download-results").addEventListener("click", () => {
-    const r = testResult();
-    downloadCsv(`test-${r.date.slice(0, 10)}.csv`, resultRows([r]));
-  });
-  $("retest-failed").addEventListener("click", () =>
-    startTest(testResult().words.filter((w) => !w.ok).map((w) => w.en))
-  );
-  $("new-test").addEventListener("click", () => {
-    state.test.phase = "setup";
-    saveState();
-    render();
-  });
+  $("mc-next").addEventListener("click", nextQuestion);
+  $("quit-test").addEventListener("click", finishTest);
 
-  // History
+  // Results (history tab)
+  $("result-back").addEventListener("click", () => showResult(null));
+  $("result-retry").addEventListener("click", saveResults);
+  $("result-download").addEventListener("click", () => {
+    const r = openedResult();
+    if (r) downloadCsv(`test-${r.date.slice(0, 10)}.csv`, resultRows([r]));
+  });
+  // Retest on the words missed in this test, as the same kind of test
+  $("result-retest").addEventListener("click", () => {
+    const r = openedResult();
+    const words = r ? missedWords(r) : [];
+    if (!words.length) return;
+    state.test.type = r.type === "mc" ? "mc" : "flashcards";
+    state.test.unit = r.unit || "all";
+    state.tab = "test";
+    startTest(words);
+  });
+  $("result-delete").addEventListener("click", () => {
+    const r = openedResult();
+    if (!r || isUnsaved(r) || !confirm("למחוק את המבחן הזה?")) return;
+    history = history.filter((h) => h.id !== r.id);
+    sync(api("DELETE", `/api/tests/${encodeURIComponent(r.id)}`));
+    showResult(null);
+  });
   $("export-history").addEventListener("click", () => downloadCsv("all-test-results.csv", resultRows(history)));
-  $("clear-history").addEventListener("click", () => {
-    if (!confirm("למחוק את כל התוצאות השמורות?")) return;
-    history = [];
-    sync(api("DELETE", "/api/tests"));
-    render();
-  });
-
-  $("reset-session").addEventListener("click", async () => {
-    if (!confirm("לאפס את רשימות ידעתי / לא ידעתי? (תוצאות מבחנים שמורות לא יימחקו)")) return;
-    takePending(); // unsent answers are being reset anyway
-    await flushChain; // don't let a batch already in flight land after the reset
-    sync(api("DELETE", "/api/words"));
-    state = freshState();
-    saveState();
-    resetFlip();
-    render();
-  });
 
   $("logout").addEventListener("click", async () => {
     await flushWords();
@@ -547,12 +738,27 @@
       await api("POST", "/api/logout");
     } finally {
       sessionStorage.removeItem(sessionKey);
+      sessionStorage.removeItem(pendingKey());
       location.href = "/login.html";
     }
   });
 
   document.addEventListener("keydown", (e) => {
-    if ($("study").hidden || ["INPUT", "SELECT"].includes(e.target.tagName)) return;
+    if (["INPUT", "SELECT"].includes(e.target.tagName)) return;
+
+    // Multiple-choice: 1–4 picks an answer, Enter/Space goes to the next question
+    if (!$("mc").hidden) {
+      if (/^[1-4]$/.test(e.key)) {
+        chooseOption(Number(e.key) - 1);
+      } else if (e.key === "Enter" || e.key === " ") {
+        if (e.target.tagName === "BUTTON") return; // let buttons handle their own activation
+        e.preventDefault();
+        nextQuestion();
+      }
+      return;
+    }
+
+    if ($("study").hidden) return;
     if (e.key === " " || e.key === "Enter") {
       if (e.target.tagName === "BUTTON") return; // let buttons handle their own activation
       e.preventDefault();
@@ -575,15 +781,26 @@
       return;
     }
     sessionKey = `flashcards-session:${data.username}`;
-    state = loadSession() || freshState();
+    const saved = loadSession();
+    state = saved || freshState();
+    state.unsaved ??= [];
+    state.openResult ??= null;
+    if (state.test.phase === "done") state.test.phase = "setup"; // sessions from before results moved to history
     state.known = data.known;
     state.failed = data.failed;
+    restorePendingWords();
     history = data.tests;
+    // A new session's first deck can only keep known words out of the start once the lists are loaded
+    if (!saved) {
+      state.practice.queue = practiceQueue(state.practice.deck, state.practice.unit);
+      saveState();
+    }
 
     $("username").textContent = data.username;
     $("app").hidden = false;
     buildUnitSelects();
     render();
+    if (state.unsaved.length) saveResults(); // e.g. the page was reloaded while a save was in progress
   }
 
   init();

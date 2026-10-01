@@ -8,8 +8,12 @@ const { SheetsClient, loadCredentials, parseSpreadsheetId } = require("./sheets"
 
 const USERS_TAB = "users";
 const USERS_HEADER = ["username", "salt", "password_hash", "created_at"];
-const USER_DATA_HEADER = ["record_type", "test_id", "date", "unit", "english", "hebrew", "status", "correct", "total"];
-const LAST_COLUMN = "I"; // column of the last USER_DATA_HEADER field
+// test_type and chosen were added later: older tabs have a 9-column header and are upgraded when a test is saved
+const USER_DATA_HEADER = [
+  "record_type", "test_id", "date", "unit", "english", "hebrew", "status", "correct", "total", "test_type", "chosen",
+];
+const LAST_COLUMN = "K"; // column of the last USER_DATA_HEADER field
+const TEST_TYPES = ["flashcards", "mc"]; // mc = multiple choice ("American") test
 const USERNAME_RE = /^[\p{L}\p{N}_-]{3,30}$/u;
 const MIN_PASSWORD = 4;
 const STATUSES = ["succeeded", "failed"];
@@ -86,11 +90,13 @@ const wordRow = (w) => userRow({ record_type: "word", date: w.date, english: w.e
 
 function testRows(t) {
   return [
-    userRow({ record_type: "test", test_id: t.id, date: t.date, unit: t.unit, correct: t.correct, total: t.total }),
+    userRow({
+      record_type: "test", test_id: t.id, date: t.date, unit: t.unit, correct: t.correct, total: t.total, test_type: t.type,
+    }),
     ...t.words.map((w) =>
       userRow({
         record_type: "test_word", test_id: t.id, date: t.date, unit: t.unit,
-        english: w.en, hebrew: w.he, status: w.ok ? "succeeded" : "failed",
+        english: w.en, hebrew: w.he, status: w.ok ? "succeeded" : "failed", chosen: w.chosen,
       })
     ),
   ];
@@ -99,13 +105,19 @@ function testRows(t) {
 function parseUserRows(rows) {
   const words = new Map();
   const tests = new Map();
+  // Only "word" rows decide known/failed — test results (including multiple-choice) never change them
   for (const r of toObjects(rows)) {
     if (r.record_type === "word") {
       words.set(r.english, r.status);
     } else if (r.record_type === "test") {
-      tests.set(r.test_id, { id: r.test_id, date: r.date, unit: r.unit, correct: Number(r.correct), total: Number(r.total), words: [] });
+      tests.set(r.test_id, {
+        id: r.test_id, date: r.date, unit: r.unit, correct: Number(r.correct), total: Number(r.total),
+        type: r.test_type || "", words: [],
+      });
     } else if (r.record_type === "test_word") {
-      tests.get(r.test_id)?.words.push({ en: r.english, he: r.hebrew, ok: r.status === "succeeded" });
+      const word = { en: r.english, he: r.hebrew, ok: r.status === "succeeded" };
+      if (r.chosen) word.chosen = r.chosen;
+      tests.get(r.test_id)?.words.push(word);
     }
   }
   const byStatus = (s) => [...words].filter(([, status]) => status === s).map(([en]) => en);
@@ -254,31 +266,38 @@ async function route(req, res, method, routePath) {
     return sendJson(res, 200, {});
   }
 
-  if (key === "DELETE /words") {
-    await rewriteUserTab(username, (r) => r[0] !== "word");
-    return sendJson(res, 200, {});
-  }
-
   if (key === "POST /tests") {
     const body = await readBody(req);
     if (!Array.isArray(body.words) || body.words.length === 0) return sendJson(res, 400, { error: "אין מילים במבחן" });
-    const words = body.words.slice(0, 5000).map((w) => ({ en: str(w?.en, 200), he: str(w?.he), ok: !!w?.ok }));
+    const words = body.words.slice(0, 5000).map((w) => {
+      const word = { en: str(w?.en, 200), he: str(w?.he), ok: !!w?.ok };
+      if (str(w?.chosen)) word.chosen = str(w.chosen); // the answer picked in a multiple-choice test
+      return word;
+    });
     const test = {
       id: `${Date.now().toString(36)}${crypto.randomBytes(3).toString("hex")}`,
       date: str(body.date, 40) || new Date().toISOString(),
       unit: str(body.unit, 10) || "all",
+      type: TEST_TYPES.includes(body.type) ? body.type : "flashcards",
       correct: words.filter((w) => w.ok).length,
       total: words.length,
       words,
     };
-    await readOrCreateTab(username, USER_DATA_HEADER, "A1"); // make sure the tab exists
+    // Reads the header row (and creates the tab if needed) plus columns A:C, so we can spot a repeat
+    const [header = [], ...rows] = await readOrCreateTab(username, USER_DATA_HEADER, "A:C");
+
+    // Tests are saved automatically when they finish, and the browser retries if a reload interrupted
+    // the save — so a test with the same start time that's already stored is the same test: don't add it twice.
+    const existing = rows.find((r) => r[0] === "test" && r[2] === test.date);
+    if (existing) return sendJson(res, 200, { ...test, id: existing[1] });
+
+    // Upgrade an older, shorter header so the new columns get parsed (the header was only read up to column C)
+    const [fullHeader = []] = header[0] === USER_DATA_HEADER[0] ? await sheets.readTab(username, "1:1") : [[]];
+    if (fullHeader[0] === USER_DATA_HEADER[0] && fullHeader.length < USER_DATA_HEADER.length) {
+      await sheets.batchWrite([{ title: username, cells: `A1:${LAST_COLUMN}1`, values: [USER_DATA_HEADER] }]);
+    }
     await sheets.appendRows(username, testRows(test));
     return sendJson(res, 201, test);
-  }
-
-  if (key === "DELETE /tests") {
-    await rewriteUserTab(username, (r) => r[0] !== "test" && r[0] !== "test_word");
-    return sendJson(res, 200, {});
   }
 
   const testMatch = routePath.match(/^\/tests\/([\w-]+)$/);
