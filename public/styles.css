@@ -133,7 +133,6 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
 .translation { display: flex; flex-direction: column; gap: 10px; max-width: 100%; overflow-y: auto; }
 .meaning { font-size: 1.6rem; font-weight: 700; color: var(--accent); line-height: 1.3; }
 .meaning + .meaning { font-size: 1.25rem; padding-top: 10px; border-top: 1px solid var(--border); }
-.unit-badge { position: absolute; top: 14px; left: 16px; color: var(--muted); font-size: 0.8rem; }
 
 /* Answer buttons */
 .answers {
@@ -345,7 +344,7 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: 44px 20px 28px;
+  padding: 32px 20px 28px;
   border-radius: 18px;
   background: var(--surface);
   border: 1px solid var(--border);

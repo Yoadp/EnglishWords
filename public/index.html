@@ -28,10 +28,6 @@
 
     <!-- Practice -->
     <section id="view-practice" class="view">
-      <label class="field">
-        <span>יחידה</span>
-        <select id="practice-unit" class="unit-select"></select>
-      </label>
       <div class="decks">
         <button class="deck-btn" data-deck="all">כל המילים <span id="count-all"></span></button>
         <button class="deck-btn" data-deck="known">ידעתי <span id="count-known"></span></button>
@@ -68,10 +64,6 @@
             <option value="all">כל המילים</option>
             <option value="failed">מילים שלא ידעתי</option>
           </select>
-        </label>
-        <label class="field">
-          <span>יחידה</span>
-          <select id="test-unit" class="unit-select"></select>
         </label>
         <label class="field">
           <span>מספר מילים</span>
@@ -129,7 +121,6 @@
       <div class="card" id="card" tabindex="0" role="button" aria-label="הפוך כרטיס">
         <div class="card-inner">
           <div class="card-face card-front" dir="ltr">
-            <span class="unit-badge" id="unit-badge"></span>
             <span class="word" id="word"></span>
             <span class="hint">לחצו כדי להפוך</span>
           </div>
@@ -152,7 +143,6 @@
         <span id="mc-progress-text"></span>
       </div>
       <div class="mc-question">
-        <span class="unit-badge" id="mc-unit-badge"></span>
         <span class="word" id="mc-word" dir="ltr"></span>
         <span class="muted">בחרו את הפירוש הנכון</span>
       </div>
