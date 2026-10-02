@@ -135,6 +135,7 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
 .translation { display: flex; flex-direction: column; gap: 10px; max-width: 100%; overflow-y: auto; }
 .meaning { font-size: 1.6rem; font-weight: 700; color: var(--accent); line-height: 1.3; }
 .meaning + .meaning { font-size: 1.25rem; padding-top: 10px; border-top: 1px solid var(--border); }
+.unit-badge { position: absolute; top: 14px; left: 16px; color: var(--muted); font-size: 0.8rem; }
 
 /* Answer buttons */
 .answers {
@@ -239,6 +240,9 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
   font: inherit;
 }
 #view-test .field { text-align: start; }
+/* Practice screen: label and dropdown together in the middle of the row */
+.field-centered { justify-content: center; }
+.field-centered select { flex: 0 1 220px; }
 .chips { display: flex; gap: 8px; justify-content: center; margin-bottom: 8px; }
 .chip {
   padding: 6px 14px;
@@ -346,7 +350,7 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: 32px 20px 28px;
+  padding: 44px 20px 28px;
   border-radius: 18px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -463,7 +467,9 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 .drawer-word { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.drawer-word .en { font-weight: 700; align-self: flex-start; }
+.drawer-word-line { display: flex; align-items: baseline; gap: 6px; }
+.drawer-word .en { font-weight: 700; }
+.drawer-units { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
 .drawer-word .he { color: var(--muted); font-size: 0.85rem; }
 .mark-known {
   flex-shrink: 0;
@@ -478,7 +484,7 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
 .mark-known:hover { background: var(--success); color: #fff; }
 
 /* "Show translation" toggle in the side panel */
-.drawer-toggle {
+.drawer-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -488,6 +494,16 @@ h1 { margin: 0; font-size: 1.8rem; color: var(--accent); }
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
+}
+.drawer-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 400;
 }
 .drawer-toggle input { position: absolute; opacity: 0; pointer-events: none; }
 .switch {

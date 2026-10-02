@@ -1,6 +1,6 @@
 (() => {
+  const UNITS = [...new Set(VOCABULARY.flatMap((w) => w.units))].sort((a, b) => a - b);
   const byWord = new Map(VOCABULARY.map((w) => [w.en, w]));
-  const ALL_WORDS = VOCABULARY.map((w) => w.en);
 
   const $ = (id) => document.getElementById(id);
   const card = $("card");
@@ -159,9 +159,9 @@
       tab: "practice",
       known: [],
       failed: [],
-      practice: { deck: "all", queue: shuffle(ALL_WORDS), index: 0, round: { known: 0, failed: 0 } },
+      practice: { deck: "all", unit: "all", queue: shuffle(pool("all")), index: 0, round: { known: 0, failed: 0 } },
       test: {
-        phase: "setup", type: "flashcards", source: "all", size: 20,
+        phase: "setup", type: "flashcards", source: "all", unit: "all", size: 20,
         queue: [], index: 0, answers: {}, options: {}, chosen: {}, startedAt: null,
       },
       // Finished tests whose save hasn't succeeded yet (retried automatically); and the result open in history
@@ -183,11 +183,22 @@
     return a;
   }
 
-  function deckWords(deck) {
-    if (deck === "known") return state.known.filter((en) => byWord.has(en));
-    if (deck === "failed") return state.failed.filter((en) => byWord.has(en));
-    return ALL_WORDS;
+  function inUnit(en, unit) {
+    const w = byWord.get(en);
+    return !!w && (unit === "all" || w.units.includes(Number(unit)));
   }
+
+  function pool(unit) {
+    return VOCABULARY.filter((w) => inUnit(w.en, unit)).map((w) => w.en);
+  }
+
+  function deckWords(deck, unit = "all") {
+    if (deck === "known") return state.known.filter((en) => inUnit(en, unit));
+    if (deck === "failed") return state.failed.filter((en) => inUnit(en, unit));
+    return pool(unit);
+  }
+
+  const unitLabel = (unit) => (unit === "all" ? "כל היחידות" : `יחידה ${unit}`);
 
   function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
@@ -272,8 +283,8 @@
   // randomly into the rest, so a session starts with words still worth practising.
   const KNOWN_FREE_START = 50;
 
-  function practiceQueue(deck) {
-    const words = deckWords(deck);
+  function practiceQueue(deck, unit) {
+    const words = deckWords(deck, unit);
     if (deck !== "all") return shuffle(words);
     const known = new Set(state.known);
     const others = shuffle(words.filter((en) => !known.has(en)));
@@ -281,8 +292,8 @@
     return [...head, ...shuffle([...others.slice(KNOWN_FREE_START), ...words.filter((en) => known.has(en))])];
   }
 
-  function startPractice(deck) {
-    state.practice = { deck, queue: practiceQueue(deck), index: 0, round: { known: 0, failed: 0 } };
+  function startPractice(deck, unit = state.practice.unit) {
+    state.practice = { deck, unit, queue: practiceQueue(deck, unit), index: 0, round: { known: 0, failed: 0 } };
     saveState();
     resetFlip();
     render();
@@ -293,14 +304,15 @@
 
   // Words a new test can draw from: every word, or only the ones the user didn't know
   function testPool() {
-    return deckWords(state.test.source === "failed" ? "failed" : "all");
+    const { source = "all", unit } = state.test;
+    return source === "failed" ? deckWords("failed", unit) : pool(unit);
   }
 
   // Saved tests from before test types existed have no type
   const typeLabel = (type) => ({ mc: "אמריקאי", flashcards: "כרטיסיות" })[type] || "";
 
   const testLabel = () =>
-    [typeLabel(state.test.type || "flashcards"), state.test.source === "failed" && sourceLabel("failed")]
+    [isMcTest() && typeLabel("mc"), state.test.source === "failed" && sourceLabel("failed"), unitLabel(state.test.unit)]
       .filter(Boolean)
       .join(" · ");
 
@@ -333,6 +345,7 @@
     return {
       id: t.startedAt,
       date: t.startedAt,
+      unit: t.unit,
       type: t.type || "flashcards",
       total: words.length,
       correct: words.filter((w) => w.ok).length,
@@ -367,7 +380,7 @@
     try {
       while (state.unsaved.length) {
         const r = state.unsaved[0];
-        const saved = await api("POST", "/api/tests", { date: r.date, type: r.type, words: r.words });
+        const saved = await api("POST", "/api/tests", { date: r.date, unit: r.unit, type: r.type, words: r.words });
         state.unsaved.shift();
         if (!history.some((h) => h.id === saved.id)) history.push(saved);
         if (state.openResult === r.id) state.openResult = saved.id;
@@ -382,11 +395,11 @@
   }
 
   function resultRows(results) {
-    const rows = [["תאריך", "סוג מבחן", "English", "עברית", "תוצאה", "התשובה שנבחרה"]];
+    const rows = [["תאריך", "סוג מבחן", "יחידה", "English", "עברית", "תוצאה", "התשובה שנבחרה"]];
     results.forEach((r) =>
       r.words.forEach((w) =>
         rows.push([
-          formatDate(r.date), typeLabel(r.type), w.en, w.he, w.ok ? "ידעתי" : "לא ידעתי", w.chosen || "",
+          formatDate(r.date), typeLabel(r.type), unitLabel(r.unit), w.en, w.he, w.ok ? "ידעתי" : "לא ידעתי", w.chosen || "",
         ])
       )
     );
@@ -477,6 +490,7 @@
     $("mc-progress-fill").style.width = `${(t.index / total) * 100}%`;
     $("mc-progress-text").textContent = `${t.index} / ${total}`;
     $("mc-word").textContent = w.en;
+    $("mc-unit-badge").textContent = w.units.map((u) => `Unit ${u}`).join(" · ");
 
     const correct = meaningsText(w);
     const answered = en in t.answers;
@@ -560,21 +574,35 @@
     $("failed-drawer").classList.toggle("hide-translation", !show);
   }
 
+  // The unit filter at the top of the panel (in memory only; "all" = every unit)
+  let drawerUnit = "all";
+  const unitsText = (w) => (w.units.length > 1 ? `(יחידות ${w.units.join(", ")})` : `(יחידה ${w.units[0]})`);
+
   function renderDrawer() {
-    const words = deckWords("failed").slice().reverse(); // most recently failed first
-    $("failed-list-count").textContent = `(${words.length})`;
-    $("failed-list-count").className = countClass(words.length);
+    const all = deckWords("failed", "all").slice().reverse(); // every failed word, most recent first
+    $("failed-list-count").textContent = `(${all.length})`;
+    $("failed-list-count").className = countClass(all.length);
     if (!drawerOpen) return;
-    $("drawer-count").textContent = `(${words.length})`;
+
+    const words = all.filter((en) => inUnit(en, drawerUnit));
+    $("drawer-unit").value = drawerUnit;
+    $("drawer-count").textContent = drawerUnit === "all" ? `(${all.length})` : `(${words.length} מתוך ${all.length})`;
     $("drawer-empty").hidden = words.length > 0;
+    $("drawer-empty").textContent = all.length ? `אין מילים שלא ידעתם ב${unitLabel(drawerUnit)}.` : "אין כרגע מילים שלא ידעתם.";
     $("drawer-list").replaceChildren(
       ...words.map((en) => {
+        const w = byWord.get(en);
         const button = el("button", { class: "mark-known", type: "button" }, "✓ ידעתי");
         button.addEventListener("click", () => markKnown(en));
         return el(
           "li",
           {},
-          el("div", { class: "drawer-word" }, el("span", { class: "en", dir: "ltr" }, en), el("span", { class: "he" }, byWord.get(en).he.join("; "))),
+          el(
+            "div",
+            { class: "drawer-word" },
+            el("div", { class: "drawer-word-line" }, el("span", { class: "en", dir: "ltr" }, en), el("bdi", { class: "drawer-units", dir: "rtl" }, unitsText(w))),
+            el("span", { class: "he" }, w.he.join("; "))
+          ),
           button
         );
       })
@@ -588,26 +616,28 @@
 
     const w = byWord.get(s.queue[s.index]);
     $("word").textContent = w.en;
+    $("unit-badge").textContent = w.units.map((u) => `Unit ${u}`).join(" · ");
     $("translation").replaceChildren(...w.he.map((m) => el("div", { class: "meaning" }, m)));
   }
 
   function renderPractice() {
     const p = state.practice;
-    $("count-all").textContent = `(${deckWords("all").length})`;
-    $("count-known").textContent = `(${deckWords("known").length})`;
-    $("count-failed").textContent = `(${deckWords("failed").length})`;
+    $("practice-unit").value = p.unit;
+    $("count-all").textContent = `(${deckWords("all", p.unit).length})`;
+    $("count-known").textContent = `(${deckWords("known", p.unit).length})`;
+    $("count-failed").textContent = `(${deckWords("failed", p.unit).length})`;
 
     document.querySelectorAll(".deck-btn").forEach((btn) => {
       const deck = btn.dataset.deck;
       btn.classList.toggle("active", deck === p.deck);
-      btn.disabled = deckWords(deck).length === 0;
+      btn.disabled = deckWords(deck, p.unit).length === 0;
     });
 
     const finished = p.index >= p.queue.length;
     $("practice-done").hidden = !finished;
     if (finished) {
-      const known = deckWords("known").length;
-      const failed = deckWords("failed").length;
+      const known = deckWords("known", p.unit).length;
+      const failed = deckWords("failed", p.unit).length;
       $("practice-summary").textContent = p.queue.length
         ? `בסבב הזה: ידעתם ${p.round.known} מילים, לא ידעתם ${p.round.failed}.`
         : "אין מילים בחפיסה הזו.";
@@ -628,11 +658,12 @@
       $("test-type").value = t.type ?? "flashcards";
       $("test-type-note").hidden = !isMcTest();
       $("test-source").value = t.source ?? "all";
+      $("test-unit").value = t.unit;
       $("test-size").max = available;
       $("test-size").value = Math.min(t.size, available);
       $("test-pool").textContent = available
-        ? `${available} מילים זמינות (${sourceLabel(t.source)}).`
-        : `אין עדיין מילים שלא ידעתם. תרגלו קודם, או בחרו "כל המילים".`;
+        ? `${available} מילים זמינות (${sourceLabel(t.source)}, ${unitLabel(t.unit)}).`
+        : `אין מילים שלא ידעתם ב${unitLabel(t.unit)}. תרגלו קודם, או בחרו "כל המילים".`;
       $("start-test").disabled = available === 0;
     }
 
@@ -663,7 +694,7 @@
 
   // ---------- History: list of tests, or one test's results ----------
   const percent = (r) => (r.total ? Math.round((r.correct / r.total) * 100) : 0);
-  const resultSummary = (r) => typeLabel(r.type);
+  const resultSummary = (r) => [typeLabel(r.type), unitLabel(r.unit)].filter(Boolean).join(" · ");
   const isUnsaved = (r) => state.unsaved.includes(r);
   const openedResult = () =>
     state.openResult ? state.unsaved.find((r) => r.id === state.openResult) || history.find((r) => r.id === state.openResult) : null;
@@ -691,7 +722,7 @@
           "button",
           { class: "history-row", type: "button" },
           el("span", { class: "history-score" }, `${percent(r)}%`),
-          el("span", {}, [`${r.correct}/${r.total}`, resultSummary(r)].filter(Boolean).join(" · ")),
+          el("span", {}, [`${r.correct}/${r.total}`, resultSummary(r)].join(" · ")),
           el("span", { class: "muted" }, isUnsaved(r) ? "לא נשמר עדיין" : formatDate(r.date))
         );
         row.addEventListener("click", () => showResult(r.id));
@@ -703,9 +734,7 @@
   function renderResult(r) {
     const unsaved = isUnsaved(r);
     $("result-score").textContent = `${percent(r)}%`;
-    $("result-detail").textContent = [`ידעתם ${r.correct} מתוך ${r.total} מילים`, resultSummary(r), formatDate(r.date)]
-      .filter(Boolean)
-      .join(" · ");
+    $("result-detail").textContent = `ידעתם ${r.correct} מתוך ${r.total} מילים · ${resultSummary(r)} · ${formatDate(r.date)}`;
     $("result-status").textContent = !unsaved ? "✓ התוצאות נשמרו" : savingResults ? "שומר את התוצאות..." : "התוצאות עדיין לא נשמרו";
     $("result-status").classList.toggle("warn", unsaved && !savingResults);
     $("result-retry").hidden = !unsaved || savingResults;
@@ -715,6 +744,15 @@
       r.type === "mc" ? `מבחן חוזר על הטעויות (${missed})` : `מבחן חוזר על המילים שלא ידעתי (${missed})`;
     $("result-retest").disabled = missed === 0;
     $("result-word-lists").replaceChildren(...wordLists(r.words, r.type));
+  }
+
+  function buildUnitSelects() {
+    document.querySelectorAll(".unit-select").forEach((sel) => {
+      sel.replaceChildren(
+        el("option", { value: "all" }, unitLabel("all")),
+        ...UNITS.map((u) => el("option", { value: String(u) }, unitLabel(u)))
+      );
+    });
   }
 
   // ---------- Events ----------
@@ -732,6 +770,10 @@
   $("close-drawer").addEventListener("click", () => setDrawer(false));
   $("drawer-backdrop").addEventListener("click", () => setDrawer(false));
   $("toggle-translation").addEventListener("change", (e) => setShowTranslation(e.target.checked));
+  $("drawer-unit").addEventListener("change", (e) => {
+    drawerUnit = e.target.value;
+    renderDrawer();
+  });
   $("toggle-translation").checked = showTranslation();
   setShowTranslation(showTranslation());
 
@@ -741,6 +783,7 @@
 
   // Practice
   document.querySelectorAll(".deck-btn").forEach((b) => b.addEventListener("click", () => startPractice(b.dataset.deck)));
+  $("practice-unit").addEventListener("change", (e) => startPractice("all", e.target.value));
   $("repeat-known").addEventListener("click", () => startPractice("known"));
   $("repeat-failed").addEventListener("click", () => startPractice("failed"));
   $("restart-all").addEventListener("click", () => startPractice("all"));
@@ -753,6 +796,11 @@
   });
   $("test-source").addEventListener("change", (e) => {
     state.test.source = e.target.value;
+    saveState();
+    render();
+  });
+  $("test-unit").addEventListener("change", (e) => {
+    state.test.unit = e.target.value;
     saveState();
     render();
   });
@@ -792,6 +840,7 @@
     const words = r ? missedWords(r) : [];
     if (!words.length) return;
     state.test.type = r.type === "mc" ? "mc" : "flashcards";
+    state.test.unit = r.unit || "all";
     state.tab = "test";
     startTest(words);
   });
@@ -861,6 +910,8 @@
     const saved = loadSession();
     state = saved || freshState();
     state.unsaved ??= [];
+    state.practice.unit ??= "all"; // sessions saved while there was no unit selector
+    state.test.unit ??= "all";
     state.openResult ??= null;
     if (state.test.phase === "done") state.test.phase = "setup"; // sessions from before results moved to history
     state.known = data.known;
@@ -868,18 +919,14 @@
     restorePendingWords();
     history = data.tests;
     // A new session's first deck can only keep known words out of the start once the lists are loaded
-    // Sessions from when there was a unit selector may hold a single-unit deck: start them on the full list
-    const hadUnit = saved && (state.practice.unit ?? "all") !== "all";
-    delete state.practice.unit;
-    delete state.test.unit;
-    if (!saved || hadUnit) {
-      const deck = hadUnit ? "all" : state.practice.deck;
-      state.practice = { deck, queue: practiceQueue(deck), index: 0, round: { known: 0, failed: 0 } };
+    if (!saved) {
+      state.practice.queue = practiceQueue(state.practice.deck, state.practice.unit);
       saveState();
     }
 
     $("username").textContent = data.username;
     $("app").hidden = false;
+    buildUnitSelects();
     render();
     if (state.unsaved.length) saveResults(); // e.g. the page was reloaded while a save was in progress
   }

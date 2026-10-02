@@ -1,5 +1,5 @@
 // English -> Hebrew vocabulary, extracted from english_words.pdf (units 1-10).
-// Each entry: en = English word, he = Hebrew meanings, units = units it appears in (never shown to users),
+// Each entry: en = English word, he = Hebrew meanings, units = units it appears in (shown in the app),
 // topic + pos = hand-assigned topic and part of speech, used to build similar wrong answers in multiple-choice tests.
 // pos: n noun, v verb, a adjective, r adverb, f function word / connector / phrase. Topics:
 //   EMO emotions & feelings
