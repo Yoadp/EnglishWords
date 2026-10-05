@@ -27,6 +27,7 @@
       <button class="tab" data-tab="practice">תרגול</button>
       <button class="tab" data-tab="test">מבחן</button>
       <button class="tab" data-tab="history">תוצאות שמורות</button>
+      <button class="tab" data-tab="progress">התקדמות</button>
     </nav>
 
     <!-- Practice -->
@@ -122,6 +123,47 @@
         <button class="link-btn danger" id="result-delete">מחיקת המבחן</button>
       </div>
     </section>
+
+    <!-- Progress -->
+    <section id="view-progress" class="view">
+      <div class="progress-card">
+        <h2>מצב המילים</h2>
+        <div class="kpi-row" id="status-kpis"></div>
+        <ul class="viz-legend" id="status-legend"></ul>
+        <div class="stack-bar stack-bar-lg" id="status-bar"></div>
+        <p class="muted progress-note" id="status-coverage"></p>
+
+        <h3>לפי יחידה</h3>
+        <div class="unit-bars" id="unit-bars"></div>
+        <details class="table-view">
+          <summary>הצגה כטבלה</summary>
+          <table id="unit-table"></table>
+        </details>
+      </div>
+
+      <div class="progress-card">
+        <h2>פעילות ורצף</h2>
+        <div class="today" id="today"></div>
+        <div class="kpi-row" id="streak-kpis"></div>
+        <h3>12 השבועות האחרונים</h3>
+        <div class="heatmap-wrap">
+          <div class="heatmap-days" aria-hidden="true"><span>א׳</span><span></span><span>ג׳</span><span></span><span>ה׳</span><span></span><span>ש׳</span></div>
+          <div class="heatmap" id="heatmap" role="img"></div>
+        </div>
+        <div class="heatmap-legend">
+          <span>פחות</span>
+          <span class="cell lvl0"></span><span class="cell lvl1"></span><span class="cell lvl2"></span><span class="cell lvl3"></span><span class="cell lvl4"></span>
+          <span>יותר</span>
+        </div>
+        <p class="muted progress-note">יום תרגול = לפחות 25 מילים ביום, או מבחן של 20 מילים ומעלה. ימים מלפני תחילת המעקב הם הערכה.</p>
+        <details class="table-view">
+          <summary>הצגה כטבלה</summary>
+          <table id="days-table"></table>
+        </details>
+      </div>
+    </section>
+
+    <div class="viz-tooltip" id="viz-tooltip" role="tooltip" hidden></div>
 
     <!-- Shared flashcard -->
     <section id="study" hidden>

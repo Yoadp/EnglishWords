@@ -80,17 +80,50 @@
     return batch;
   }
 
+  // ---------- Daily answer counter (for the progress tab) ----------
+  // Every flashcard answer (practice or flashcard test) adds 1 to today's counter; counters travel with the word
+  // batches and are added to a "day" row in the sheet. Unlike words they're never replayed after a reload, so a
+  // counter is never added twice (the price: answers sent while a page closes offline may go uncounted).
+  const pendingDays = new Map(); // local date -> { date, answered, knew }
+
+  const localDay = (d = new Date()) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  function addDayCounts(target, { date, answered, knew }) {
+    const entry = target.get(date) || { date, answered: 0, knew: 0 };
+    entry.answered += answered;
+    entry.knew += knew;
+    target.set(date, entry);
+  }
+
+  function countAnswer(success) {
+    const today = { date: localDay(), answered: 1, knew: success ? 1 : 0 };
+    addDayCounts(pendingDays, today);
+    // Update the local view right away
+    const days = new Map((state.days || []).map((d) => [d.date, { ...d }]));
+    addDayCounts(days, today);
+    state.days = [...days.values()];
+  }
+
+  function takeDays() {
+    const days = [...pendingDays.values()];
+    pendingDays.clear();
+    return days;
+  }
+
   // Sends pending word results; resolves once they're saved (never rejects — failures are retried)
   function flushWords() {
     flushChain = flushChain.then(async () => {
       const batch = takePending();
-      if (!batch.length) return;
+      const days = takeDays();
+      if (!batch.length && !days.length) return;
       try {
-        await api("POST", "/api/words", { words: batch });
+        await api("POST", "/api/words", { words: batch, days });
         $("sync-error").hidden = true;
       } catch (err) {
         // Put the batch back, unless the word was answered again in the meantime
         batch.forEach((w) => pendingWords.has(w.en) || pendingWords.set(w.en, w));
+        days.forEach((d) => addDayCounts(pendingDays, d));
         showSyncError(err);
         clearTimeout(flushTimer);
         flushTimer = setTimeout(flushWords, WORD_RETRY_MS);
@@ -103,14 +136,15 @@
   // keepalive lets the request finish even if the page is being closed
   function sendPendingOnExit() {
     const batch = takePending();
-    if (!batch.length) return;
+    const days = takeDays();
+    if (!batch.length && !days.length) return;
     batch.forEach((w) => unconfirmed.set(w.en, w));
     persistPending();
     fetch("/api/words", {
       method: "POST",
       keepalive: true,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ words: batch }),
+      body: JSON.stringify({ words: batch, days }),
     }).then(
       (res) => {
         if (!res.ok) return;
@@ -253,6 +287,7 @@
     state.failed = state.failed.filter((w) => w !== current);
     (success ? state.known : state.failed).push(current);
     queueWord(current, success ? "succeeded" : "failed");
+    countAnswer(success);
 
     if (s === state.practice) {
       s.round[success ? "known" : "failed"]++;
@@ -513,11 +548,13 @@
   // ---------- Rendering ----------
   function render() {
     document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
-    ["practice", "test", "history"].forEach((t) => ($(`view-${t}`).hidden = state.tab !== t));
+    ["practice", "test", "history", "progress"].forEach((t) => ($(`view-${t}`).hidden = state.tab !== t));
+    hideTip();
 
     if (state.tab === "practice") renderPractice();
     if (state.tab === "test") renderTest();
     if (state.tab === "history") renderHistory();
+    if (state.tab === "progress") renderProgress();
 
     const s = active();
     const studying = !!s && s.index < s.queue.length;
@@ -606,6 +643,232 @@
           button
         );
       })
+    );
+  }
+
+  // ---------- Progress tab ----------
+  // A practice day: at least PRACTICE_DAY_WORDS flashcard answers that day, or a finished test of PRACTICE_DAY_TEST+ words
+  const PRACTICE_DAY_WORDS = 25;
+  const PRACTICE_DAY_TEST = 20;
+  const HEATMAP_WEEKS = 12;
+
+  const STATUS = [
+    { key: "known", label: "ידעתי", cls: "seg-known" },
+    { key: "failed", label: "לא ידעתי", cls: "seg-failed" },
+    { key: "unseen", label: "עוד לא נבחנו", cls: "seg-unseen" },
+  ];
+  const pct = (n, total) => (total ? Math.round((n / total) * 100) : 0);
+  const fmt = (n) => n.toLocaleString("he-IL");
+  const atNoon = (date) => new Date(`${date}T12:00:00`); // noon avoids daylight-saving edge cases
+  const shiftDay = (date, n) => {
+    const d = atNoon(date);
+    d.setDate(d.getDate() + n);
+    return localDay(d);
+  };
+  const dayLabel = (date) => atNoon(date).toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "numeric" });
+
+  function unitCounts(unit) {
+    const total = pool(unit).length;
+    const known = deckWords("known", unit).length;
+    const failed = deckWords("failed", unit).length;
+    return { total, known, failed, unseen: total - known - failed };
+  }
+
+  // Per local day: words answered + knew (recorded "day" rows; before recording began, estimated from each word's
+  // last-answer day — knew unknown), the tests finished that day, and whether it counts as a practice day
+  function activityByDay() {
+    const days = new Map();
+    const recorded = state.days || [];
+    const firstRecorded = recorded.reduce((min, d) => (!min || d.date < min ? d.date : min), "");
+    for (const d of recorded) days.set(d.date, { answered: d.answered, knew: d.knew, tests: [], estimated: false });
+    for (const [date, n] of Object.entries(state.wordDays || {})) {
+      if (days.has(date) || (firstRecorded && date >= firstRecorded)) continue;
+      days.set(date, { answered: n, knew: null, tests: [], estimated: true });
+    }
+    for (const r of [...history, ...state.unsaved]) {
+      const date = localDay(new Date(r.date));
+      if (!days.has(date)) days.set(date, { answered: 0, knew: null, tests: [], estimated: false });
+      days.get(date).tests.push(r);
+    }
+    for (const d of days.values()) {
+      d.practice = d.answered >= PRACTICE_DAY_WORDS || d.tests.some((t) => t.total >= PRACTICE_DAY_TEST);
+    }
+    return days;
+  }
+
+  function streaks(days) {
+    const isPractice = (date) => !!days.get(date)?.practice;
+    const today = localDay();
+    let current = 0;
+    // Today still counts as "on track" until it's over, so the streak may run up to yesterday
+    for (let date = isPractice(today) ? today : shiftDay(today, -1); isPractice(date); date = shiftDay(date, -1)) current++;
+    const practiceDates = [...days].filter(([, d]) => d.practice).map(([date]) => date).sort();
+    let longest = 0;
+    let run = 0;
+    practiceDates.forEach((date, i) => {
+      run = i && shiftDay(practiceDates[i - 1], 1) === date ? run + 1 : 1;
+      longest = Math.max(longest, run);
+    });
+    return { current, longest, total: practiceDates.length };
+  }
+
+  // Heat level: 0 nothing, 1 some activity, 2–4 practice days by words answered
+  const heatLevel = (d) =>
+    !d || (!d.answered && !d.tests.length) ? 0 : !d.practice ? 1 : d.answered >= 120 ? 4 : d.answered >= 60 ? 3 : 2;
+
+  // One tooltip for every chart: value first, details after; on hover and on keyboard focus
+  const tooltip = $("viz-tooltip");
+  const hideTip = () => (tooltip.hidden = true);
+
+  function showTip(target, lines, x, y) {
+    tooltip.replaceChildren(el("strong", {}, lines[0]), ...lines.slice(1).map((line) => el("div", {}, line)));
+    tooltip.hidden = false;
+    const rect = target.getBoundingClientRect();
+    const px = x ?? rect.left + rect.width / 2;
+    const py = y ?? rect.top;
+    const { offsetWidth: w, offsetHeight: h } = tooltip;
+    tooltip.style.left = `${Math.min(Math.max(8, px - w / 2), innerWidth - w - 8)}px`;
+    tooltip.style.top = `${py - h - 12 < 8 ? py + 18 : py - h - 12}px`;
+  }
+
+  function withTip(node, lines, focusable = true) {
+    if (focusable) node.tabIndex = 0;
+    node.setAttribute("aria-label", lines.join(", "));
+    node.addEventListener("pointermove", (e) => showTip(node, lines, e.clientX, e.clientY));
+    node.addEventListener("pointerleave", hideTip);
+    node.addEventListener("focus", () => showTip(node, lines));
+    node.addEventListener("blur", hideTip);
+    return node;
+  }
+
+  function stackBar(node, counts, title) {
+    node.replaceChildren(
+      ...STATUS.filter((st) => counts[st.key] > 0).map((st) => {
+        const seg = el("div", { class: `seg ${st.cls}` });
+        seg.style.flex = `${counts[st.key]} 1 0`;
+        return withTip(seg, [`${fmt(counts[st.key])} מילים (${pct(counts[st.key], counts.total)}%)`, `${st.label} · ${title}`]);
+      })
+    );
+  }
+
+  const kpi = (label, value, sub, swatch) =>
+    el(
+      "div",
+      { class: "kpi" },
+      el("div", { class: "kpi-label" }, swatch ? el("span", { class: `swatch ${swatch}` }) : "", label),
+      el("div", { class: "kpi-value" }, value),
+      sub ? el("div", { class: "kpi-sub" }, sub) : ""
+    );
+
+  function fillTable(table, head, rows) {
+    table.replaceChildren(
+      el("thead", {}, el("tr", {}, head.map((h) => el("th", {}, h)))),
+      el("tbody", {}, rows.map((row) => el("tr", {}, row.map((cell) => el("td", {}, String(cell))))))
+    );
+  }
+
+  function renderProgress() {
+    // Word status, overall and per unit
+    const all = unitCounts("all");
+    $("status-kpis").replaceChildren(
+      ...STATUS.map((st) => kpi(st.label, fmt(all[st.key]), `${pct(all[st.key], all.total)}% מהמילים`, st.cls))
+    );
+    $("status-legend").replaceChildren(
+      ...STATUS.map((st) => el("li", {}, el("span", { class: `swatch ${st.cls}` }), st.label))
+    );
+    stackBar($("status-bar"), all, unitLabel("all"));
+    const seen = all.known + all.failed;
+    $("status-coverage").textContent = `נבחנתם על ${pct(seen, all.total)}% מאוצר המילים (${fmt(seen)} מתוך ${fmt(all.total)}).`;
+
+    $("unit-bars").replaceChildren(
+      ...UNITS.map((u) => {
+        const c = unitCounts(u);
+        const bar = el("div", { class: "stack-bar" });
+        stackBar(bar, c, unitLabel(u));
+        return el(
+          "div",
+          { class: "unit-row" },
+          el("span", { class: "unit-name" }, unitLabel(u)),
+          bar,
+          el("span", { class: "unit-value" }, `${pct(c.known, c.total)}% ידעתי`)
+        );
+      })
+    );
+    fillTable(
+      $("unit-table"),
+      ["יחידה", "מילים", "ידעתי", "לא ידעתי", "עוד לא נבחנו"],
+      [...UNITS.map((u) => unitCounts(u)).map((c, i) => [unitLabel(UNITS[i]), c.total, c.known, c.failed, c.unseen]),
+        ["כל המילים", all.total, all.known, all.failed, all.unseen]]
+    );
+
+    // Today, streaks, calendar
+    const days = activityByDay();
+    const todayKey = localDay();
+    const today = days.get(todayKey) || { answered: 0, tests: [], practice: false };
+    const fill = el("div", { class: "meter-fill" });
+    fill.style.width = `${Math.min(100, pct(today.answered, PRACTICE_DAY_WORDS))}%`;
+    $("today").replaceChildren(
+      el("div", { class: "today-head" }, el("span", {}, "היום"), el("strong", {}, `${fmt(today.answered)} / ${PRACTICE_DAY_WORDS} מילים`)),
+      el("div", { class: "meter", role: "img", "aria-label": `היום: ${today.answered} מתוך ${PRACTICE_DAY_WORDS} מילים` }, fill),
+      el(
+        "p",
+        { class: today.practice ? "progress-note today-done" : "progress-note muted" },
+        today.practice
+          ? `✓ היום נחשב יום תרגול${today.answered < PRACTICE_DAY_WORDS ? " (מבחן של 20+ מילים)" : ""}`
+          : `עוד ${PRACTICE_DAY_WORDS - today.answered} מילים, או מבחן של ${PRACTICE_DAY_TEST} מילים, כדי שהיום ייחשב יום תרגול`
+      )
+    );
+
+    const st = streaks(days);
+    const daysText = (n) => (n === 1 ? "יום אחד" : `${fmt(n)} ימים`);
+    $("streak-kpis").replaceChildren(
+      kpi("רצף נוכחי", daysText(st.current)),
+      kpi("הרצף הארוך ביותר", daysText(st.longest)),
+      kpi("ימי תרגול בסך הכול", fmt(st.total))
+    );
+
+    // Weeks run Sunday–Saturday; the grid fills column by column (RTL puts the oldest week on the right)
+    const thisSunday = shiftDay(todayKey, -atNoon(todayKey).getDay());
+    const start = shiftDay(thisSunday, -7 * (HEATMAP_WEEKS - 1));
+    const cells = [];
+    let practiceInRange = 0;
+    for (let i = 0; i < HEATMAP_WEEKS * 7; i++) {
+      const date = shiftDay(start, i);
+      const d = days.get(date);
+      const cell = el("div", { class: `cell lvl${heatLevel(d)}` });
+      if (date > todayKey) {
+        cell.classList.add("future");
+      } else {
+        if (d?.practice) practiceInRange++;
+        const tests = d?.tests || [];
+        withTip(
+          cell,
+          [
+            d?.answered ? `${fmt(d.answered)} מילים${d.estimated ? " (הערכה)" : ""}` : tests.length ? "מבחן" : "אין פעילות",
+            dayLabel(date),
+            d?.knew != null && d.answered ? `ידעתי ${fmt(d.knew)} · לא ידעתי ${fmt(d.answered - d.knew)}` : "",
+            tests.length ? `מבחנים: ${tests.map((t) => `${t.total} מילים`).join(", ")}` : "",
+            d?.practice ? "✓ יום תרגול" : "",
+          ].filter(Boolean),
+          false // 84 cells would be too many tab stops — the table view below is the keyboard path
+        );
+      }
+      cells.push(cell);
+    }
+    $("heatmap").replaceChildren(...cells);
+    $("heatmap").setAttribute("aria-label", `${practiceInRange} ימי תרגול ב-${HEATMAP_WEEKS} השבועות האחרונים`);
+
+    const active = [...days].filter(([, d]) => d.answered || d.tests.length).sort(([a], [b]) => (a < b ? 1 : -1));
+    fillTable(
+      $("days-table"),
+      ["תאריך", "מילים", "ידעתי", "מבחנים", "יום תרגול"],
+      active.map(([date, d]) => [
+        dayLabel(date),
+        d.answered ? `${d.answered}${d.estimated ? " (הערכה)" : ""}` : "—",
+        d.knew ?? "—",
+        d.tests.length ? d.tests.map((t) => t.total).join(", ") : "—",
+        d.practice ? "✓" : "—",
+      ])
     );
   }
 
@@ -899,7 +1162,7 @@
   async function init() {
     let data;
     try {
-      data = await api("GET", "/api/data");
+      data = await api("GET", `/api/data?tz=${new Date().getTimezoneOffset()}`);
     } catch (err) {
       if (err.message !== "unauthorized") {
         document.body.textContent = "לא ניתן לטעון את הנתונים מהשרת. נסו לרענן את הדף בעוד רגע.";
@@ -914,6 +1177,8 @@
     state.test.unit ??= "all";
     state.openResult ??= null;
     if (state.test.phase === "done") state.test.phase = "setup"; // sessions from before results moved to history
+    state.days = data.days;
+    state.wordDays = data.wordDays;
     state.known = data.known;
     state.failed = data.failed;
     restorePendingWords();

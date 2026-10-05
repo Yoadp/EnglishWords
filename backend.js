@@ -102,13 +102,29 @@ function testRows(t) {
   ];
 }
 
-function parseUserRows(rows) {
+// tzOffset = the browser's Date.getTimezoneOffset() (minutes), so dates are grouped by the user's local day
+const localDay = (iso, tzOffset) => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? "" : new Date(t - tzOffset * 60000).toISOString().slice(0, 10);
+};
+
+function parseUserRows(rows, tzOffset = 0) {
   const words = new Map();
   const tests = new Map();
+  const days = new Map(); // "YYYY-MM-DD" -> { date, answered, knew } — the daily answer counters
+  const wordDays = {}; // local day -> number of words whose latest answer was that day (estimate for older days)
   // Only "word" rows decide known/failed — test results (including multiple-choice) never change them
   for (const r of toObjects(rows)) {
     if (r.record_type === "word") {
       words.set(r.english, r.status);
+      const day = localDay(r.date, tzOffset);
+      if (day) wordDays[day] = (wordDays[day] || 0) + 1;
+    } else if (r.record_type === "day") {
+      // Normally one row per date; two tabs saving at the same moment could create a second one — add them up
+      const d = days.get(r.date) || { date: r.date, answered: 0, knew: 0 };
+      d.answered += Number(r.total) || 0;
+      d.knew += Number(r.correct) || 0;
+      days.set(r.date, d);
     } else if (r.record_type === "test") {
       tests.set(r.test_id, {
         id: r.test_id, date: r.date, unit: r.unit, correct: Number(r.correct), total: Number(r.total),
@@ -121,7 +137,7 @@ function parseUserRows(rows) {
     }
   }
   const byStatus = (s) => [...words].filter(([, status]) => status === s).map(([en]) => en);
-  return { known: byStatus("succeeded"), failed: byStatus("failed"), tests: [...tests.values()] };
+  return { known: byStatus("succeeded"), failed: byStatus("failed"), tests: [...tests.values()], days: [...days.values()], wordDays };
 }
 
 // Reads a tab, creating it (with its header) if it doesn't exist yet
@@ -235,7 +251,8 @@ async function route(req, res, method, routePath) {
   if (key === "GET /me") return sendJson(res, 200, { username });
 
   if (key === "GET /data") {
-    return sendJson(res, 200, { username, ...parseUserRows(await readOrCreateTab(username, USER_DATA_HEADER)) });
+    const tz = Math.max(-840, Math.min(840, Number(new URL(req.url, "http://localhost").searchParams.get("tz")) || 0));
+    return sendJson(res, 200, { username, ...parseUserRows(await readOrCreateTab(username, USER_DATA_HEADER), tz) });
   }
 
   // Batch of word results: updates each word's existing row in place, appends rows for new words
@@ -246,11 +263,20 @@ async function route(req, res, method, routePath) {
       const en = str(w?.en, 200);
       if (en && STATUSES.includes(w.status)) latest.set(en, { en, he: str(w.he), status: w.status });
     }
-    if (!latest.size) return sendJson(res, 400, { error: "נתונים לא תקינים" });
+    // Daily answer counters: [{ date: local "YYYY-MM-DD", answered, knew }] — added to that day's "day" row
+    const count = (n) => (Number.isInteger(n) && n >= 0 && n <= 10000 ? n : 0);
+    const dayCounts = (Array.isArray(body.days) ? body.days.slice(0, 7) : [])
+      .map((d) => ({ date: str(d?.date, 10), answered: count(d?.answered), knew: count(d?.knew) }))
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.date) && d.answered > 0 && d.knew <= d.answered);
+    if (!latest.size && !dayCounts.length) return sendJson(res, 400, { error: "נתונים לא תקינים" });
 
-    const rows = await readOrCreateTab(username, USER_DATA_HEADER, "A:E"); // record_type … english
+    const rows = await readOrCreateTab(username, USER_DATA_HEADER, `A:${LAST_COLUMN}`);
     const rowOf = new Map();
-    rows.forEach((r, i) => r[0] === "word" && rowOf.set(r[4], i + 1));
+    const dayRowOf = new Map();
+    rows.forEach((r, i) => {
+      if (r[0] === "word") rowOf.set(r[4], i + 1);
+      if (r[0] === "day" && !dayRowOf.has(r[2])) dayRowOf.set(r[2], { row: i + 1, answered: Number(r[8]) || 0, knew: Number(r[7]) || 0 });
+    });
 
     const date = new Date().toISOString();
     const updates = [];
@@ -259,6 +285,15 @@ async function route(req, res, method, routePath) {
       const values = wordRow({ ...w, date });
       const row = rowOf.get(w.en);
       if (row) updates.push({ title: username, cells: `A${row}:${LAST_COLUMN}${row}`, values: [values] });
+      else appends.push(values);
+    }
+    for (const d of dayCounts) {
+      const existing = dayRowOf.get(d.date);
+      const values = userRow({
+        record_type: "day", date: d.date,
+        total: (existing?.answered || 0) + d.answered, correct: (existing?.knew || 0) + d.knew,
+      });
+      if (existing) updates.push({ title: username, cells: `A${existing.row}:${LAST_COLUMN}${existing.row}`, values: [values] });
       else appends.push(values);
     }
     if (updates.length) await sheets.batchWrite(updates);
