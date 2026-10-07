@@ -219,7 +219,10 @@
 
   function inUnit(en, unit) {
     const w = byWord.get(en);
-    return !!w && (unit === "all" || w.units.includes(Number(unit)));
+    if (!w) return false;
+    if (unit === "all") return true;
+    if (unit === "link") return w.topic === "CONN";
+    return w.units.includes(Number(unit));
   }
 
   function pool(unit) {
@@ -232,7 +235,7 @@
     return pool(unit);
   }
 
-  const unitLabel = (unit) => (unit === "all" ? "כל היחידות" : `יחידה ${unit}`);
+  const unitLabel = (unit) => unit === "all" ? "כל היחידות" : unit === "link" ? "מילות קישור" : `יחידה ${unit}`;
 
   function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
@@ -1013,7 +1016,8 @@
     document.querySelectorAll(".unit-select").forEach((sel) => {
       sel.replaceChildren(
         el("option", { value: "all" }, unitLabel("all")),
-        ...UNITS.map((u) => el("option", { value: String(u) }, unitLabel(u)))
+        ...UNITS.map((u) => el("option", { value: String(u) }, unitLabel(u))),
+        el("option", { value: "link" }, unitLabel("link"))
       );
     });
   }
