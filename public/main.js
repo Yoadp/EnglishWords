@@ -295,7 +295,7 @@
       s.answers[current] = success;
     }
     s.index++;
-    if (s === state.practice && !success) requeueSoon(s, current);
+    if (s === state.practice && !success) storeForNextSession(current);
     if (s === state.test && s.index >= s.queue.length) return finishTest();
 
     saveState();
@@ -304,14 +304,18 @@
   }
 
   // ---------- Practice ----------
-  // A word the user didn't know comes back later (random spot 20–30 cards ahead, or at the end of a shorter deck),
-  // and keeps coming back until it's marked as known.
+  // A word the user didn't know is stored and will come back near the start of the next session.
   const REQUEUE_MIN = 20;
   const REQUEUE_MAX = 30;
 
-  function requeueSoon(p, en) {
-    const ahead = REQUEUE_MIN + Math.floor(Math.random() * (REQUEUE_MAX - REQUEUE_MIN + 1));
-    p.queue.splice(Math.min(p.index + ahead, p.queue.length), 0, en);
+  const nextSessionKey = () => sessionKey.replace("flashcards-session:", "flashcards-next-session-failed:");
+
+  function storeForNextSession(en) {
+    try {
+      const stored = new Set(JSON.parse(localStorage.getItem(nextSessionKey()) || "[]"));
+      stored.add(en);
+      localStorage.setItem(nextSessionKey(), JSON.stringify([...stored]));
+    } catch {}
   }
 
   // In the "all words" deck, known words are kept out of the first KNOWN_FREE_START cards and shuffled
@@ -1186,6 +1190,19 @@
     // A new session's first deck can only keep known words out of the start once the lists are loaded
     if (!saved) {
       state.practice.queue = practiceQueue(state.practice.deck, state.practice.unit);
+      // Words the user failed last session come back near the front of this session's queue
+      try {
+        const prevFailed = JSON.parse(localStorage.getItem(nextSessionKey()) || "[]");
+        if (prevFailed.length) {
+          const inQueue = new Set(prevFailed.filter((en) => state.practice.queue.includes(en)));
+          if (inQueue.size) {
+            state.practice.queue = state.practice.queue.filter((en) => !inQueue.has(en));
+            const insertAt = REQUEUE_MIN + Math.floor(Math.random() * (REQUEUE_MAX - REQUEUE_MIN + 1));
+            state.practice.queue.splice(Math.min(insertAt, state.practice.queue.length), 0, ...shuffle([...inQueue]));
+          }
+          localStorage.removeItem(nextSessionKey());
+        }
+      } catch {}
       saveState();
     }
 
